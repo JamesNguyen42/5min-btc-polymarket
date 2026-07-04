@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: btc5m-simulator-api
+    name: kalshi-btc-updown-api
     runtime: docker
     plan: starter
     healthCheckPath: /health

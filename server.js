@@ -32,7 +32,7 @@ const tradingState = {
   },
   lastTrade: null,
   recentTrades: [],
-  note: "Live trading worker is not connected yet. These fail-safe settings are saved for the backend and ready for the worker integration.",
+  note: "Kalshi live trading worker is not connected yet. These fail-safe settings are saved for the backend and ready for the worker integration.",
 };
 
 const MIME = {
@@ -108,10 +108,14 @@ function normalizeTradingSettings(input) {
 
 function buildSimArgs(input) {
   const profile = input.profile === "aggressive" ? "aggressive" : "conservative";
+  const intervalMinutes = Math.round(asNumber(input.intervalMinutes, 15, 5, 15)) === 5 ? 5 : 15;
+  const intervalSeconds = intervalMinutes * 60;
   const args = [
     path.join("scripts", "simulate_btc_5m_virtual.py"),
     "--profile",
     profile,
+    "--interval-minutes",
+    String(intervalMinutes),
     "--starting-cash",
     String(asNumber(input.startingCash, 100, 1, 1_000_000)),
     "--stake-usd",
@@ -121,7 +125,7 @@ function buildSimArgs(input) {
     "--min-btc-move-usd",
     String(asNumber(input.minBtcMoveUsd, 70, 0, 10_000)),
     "--entry-seconds-left",
-    String(Math.round(asNumber(input.entrySecondsLeft, 120, 1, 299))),
+    String(Math.round(asNumber(input.entrySecondsLeft, 120, 1, intervalSeconds - 1))),
     "--max-trades",
     String(Math.round(asNumber(input.maxTrades, profile === "aggressive" ? 20 : 12, 1, 10_000))),
     "--preview-trades",
@@ -270,7 +274,7 @@ function listen(port) {
     throw err;
   });
   server.listen(port, HOST, () => {
-    console.log(`BTC 5m simulator UI running at http://${HOST}:${port}`);
+    console.log(`Kalshi BTC Up/Down simulator UI running at http://${HOST}:${port}`);
   });
 }
 

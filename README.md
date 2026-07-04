@@ -1,13 +1,13 @@
-# 5min BTC Polymarket Skill
+# Kalshi BTC Up/Down Dashboard
 
-Open-source OpenClaw skill for **BTC 5-minute Up/Down** markets on Polymarket.
+Dashboard and virtual simulator for **Kalshi-style BTC 15-minute Up/Down** markets.
 
-Repository: https://github.com/Novals83/5min-btc-polymarket
+The active app is simulation-first and uses virtual money by default. Legacy Polymarket/OpenClaw scripts remain in the repo but are not the recommended path for US users.
 
 ## Strategy (Momentum into Close)
 This skill is aligned with a short-horizon momentum strategy:
 
-1. Trade BTC 5m event markets near expiry.
+1. Trade BTC 15-minute Up/Down event markets near expiry.
 2. Main entry window: around **2 minutes left**.
 3. Confirm that BTC has already moved by about **$70-$100** in the active interval.
 4. Check market skew (crowd positioning). If flow supports the move direction, enter **with** momentum.
@@ -24,34 +24,22 @@ This is a momentum-following approach, not a reversal strategy.
 
 ## Deploy / Run
 ### Prerequisites
-- OpenClaw environment
-- Polymarket execution stack available at:
-  - `<your-workspace>/pm-hl-conservative-plus-repo`
-- Python virtual env for runner scripts
-- Valid API credentials configured outside this repository
+- Node.js
+- Python 3
+- Network access for Coinbase BTC-USD candle data
+- Kalshi credentials only when a future live worker is connected
 
 ### Quick Start
 ```bash
-git clone https://github.com/Novals83/5min-btc-polymarket.git
+git clone https://github.com/JamesNguyen42/5min-btc-polymarket.git
 cd 5min-btc-polymarket
+npm run dev
 ```
 
-Read:
-- `SKILL.md`
-- `config/btc_5m_profiles.yaml`
-
-Run a conservative real test (example):
-```bash
-.venv/bin/python scripts/test_btc_5m_session_exit_sl.py --profile conservative --execute
-```
-
-Run aggressive profile:
-```bash
-.venv/bin/python scripts/test_btc_5m_session_exit_sl.py --profile aggressive --execute
-```
+Open `http://127.0.0.1:3000`.
 
 ## Fast Virtual-Money Simulation
-To replay the last week as if each historical 5-minute market were happening "now",
+To replay the last week as if each historical Kalshi BTC 15-minute market were happening "now",
 use the virtual simulator. It fetches real BTC-USD 1-minute candles, steps forward
 chronologically with no sleeps, places virtual trades only from data visible at the
 simulated entry time, and settles each market from the real later close.
@@ -74,7 +62,8 @@ percentage gain/loss.
 
 Dashboard pages:
 
-- Simulation: replay historical BTC 5-minute windows with virtual money.
+- Simulation: replay historical BTC 15-minute windows with virtual money.
+- Simulation can still run 5-minute windows for comparison.
 - Trading: monitor worker status and save fail-safe limits for live/paper mode.
 
 The Trading page currently stores backend fail-safe settings and shows the worker
@@ -85,13 +74,13 @@ trade, and max trades per day.
 Run the same simulation directly in the terminal:
 
 ```bash
-python scripts/simulate_btc_5m_virtual.py --days 7 --profile conservative
+python scripts/simulate_btc_5m_virtual.py --days 7 --interval-minutes 15 --profile conservative
 ```
 
 Save a report and full trade ledger:
 
 ```bash
-python scripts/simulate_btc_5m_virtual.py --days 7 --profile conservative --out runtime/btc5m_virtual_backtest.json --csv runtime/btc5m_virtual_backtest.csv
+python scripts/simulate_btc_5m_virtual.py --days 7 --interval-minutes 15 --profile conservative --out runtime/kalshi_btc15m_virtual_backtest.json --csv runtime/kalshi_btc15m_virtual_backtest.csv
 ```
 
 Useful knobs:
@@ -99,12 +88,17 @@ Useful knobs:
 - `--stake-usd 5` sets virtual stake per trade.
 - `--min-btc-move-usd 70` requires a BTC move by the simulated entry time.
 - `--entry-seconds-left 120` makes the strategy decide with about 2 minutes left.
-- `--threshold-price 0.70` sets the assumed virtual Polymarket entry price.
+- `--interval-minutes 15` simulates Kalshi-style BTC 15-minute Up/Down markets.
+- `--threshold-price 0.70` sets the assumed virtual contract entry price.
 
-Important limitation: this is a BTC-driven Polymarket-style binary simulation, not
-a full historical CLOB replay. It uses real BTC candles and real future settlement
-within each historical 5-minute bucket, but it does not reconstruct historical
-Polymarket order-book liquidity, spreads, or fill probability.
+Important limitation: this is a BTC-driven Kalshi-style binary simulation, not
+a full historical Kalshi order-book replay. It uses real BTC candles and real
+future settlement within each historical interval, but it does not reconstruct
+historical Kalshi order-book liquidity, spreads, fees, or fill probability.
+
+For Kalshi 15-minute BTC markets, settlement is only approximate here: Kalshi
+uses CF Benchmarks RTI averaged during the final minute, while this simulator
+uses Coinbase 1-minute BTC-USD candles.
 
 ## Deploy: Render Backend + Vercel Frontend
 This repo is configured for a split deployment:
@@ -147,7 +141,7 @@ FRONTEND_ORIGIN=https://your-vercel-app.vercel.app
 Keep the Render service URL. It will look like:
 
 ```text
-https://btc5m-simulator-api.onrender.com
+https://kalshi-btc-updown-api.onrender.com
 ```
 
 ### 3. Deploy the frontend on Vercel

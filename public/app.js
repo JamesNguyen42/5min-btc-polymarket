@@ -72,6 +72,7 @@ function showPage(pageId) {
 function simFormData() {
   const data = Object.fromEntries(new FormData(simForm).entries());
   return {
+    intervalMinutes: numberFromForm(data, "intervalMinutes"),
     profile: data.profile,
     days: numberFromForm(data, "days"),
     start: data.start || null,
@@ -156,7 +157,7 @@ function renderReport(report) {
   pnl.textContent = money(summary.total_pnl_usd);
   winRate.textContent = summary.win_rate === null || summary.win_rate === undefined ? "--" : pct(summary.win_rate * 100);
   trades.textContent = summary.trades ?? "--";
-  rangeText.textContent = `${shortDate(report.simulated_present_started_at)} to ${shortDate(report.simulated_present_finished_at)} | ${summary.markets_replayed || 0} markets replayed`;
+  rangeText.textContent = `${report.params?.interval_minutes || "--"}m | ${shortDate(report.simulated_present_started_at)} to ${shortDate(report.simulated_present_finished_at)} | ${summary.markets_replayed || 0} markets replayed`;
   renderTrades(report.trades);
 }
 

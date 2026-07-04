@@ -42,13 +42,13 @@ def parse_utc(value: str) -> dt.datetime:
     return parsed.astimezone(UTC)
 
 
-def floor_5m(ts: int) -> int:
-    return ts - (ts % 300)
+def floor_interval(ts: int, interval_sec: int) -> int:
+    return ts - (ts % interval_sec)
 
 
-def ceil_5m(ts: int) -> int:
-    floored = floor_5m(ts)
-    return floored if floored == ts else floored + 300
+def ceil_interval(ts: int, interval_sec: int) -> int:
+    floored = floor_interval(ts, interval_sec)
+    return floored if floored == ts else floored + interval_sec
 
 
 def iso(ts: int | float) -> str:
@@ -79,7 +79,7 @@ def fetch_coinbase_1m(start: dt.datetime, end: dt.datetime) -> list[dict[str, fl
             "https://api.exchange.coinbase.com/products/BTC-USD/candles?"
             + urllib.parse.urlencode(params)
         )
-        req = urllib.request.Request(url, headers={"User-Agent": "btc5m-virtual-simulator/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "btc-updown-virtual-simulator/1.0"})
         with urllib.request.urlopen(req, timeout=20) as resp:
             rows = json.loads(resp.read().decode("utf-8"))
         if not isinstance(rows, list):
@@ -112,6 +112,8 @@ def day_key(ts: int) -> str:
 
 def simulate(args: argparse.Namespace) -> dict[str, Any]:
     profile = PROFILES[args.profile]
+    interval_minutes = int(args.interval_minutes)
+    interval_sec = interval_minutes * 60
     threshold_price = args.threshold_price if args.threshold_price is not None else profile["threshold_price"]
     stake_usd = args.stake_usd if args.stake_usd is not None else profile["stake_usd"]
     min_btc_move_usd = args.min_btc_move_usd if args.min_btc_move_usd is not None else profile["min_btc_move_usd"]
@@ -127,10 +129,13 @@ def simulate(args: argparse.Namespace) -> dict[str, Any]:
     else:
         start = end - dt.timedelta(days=args.days)
 
-    # Align to completed 5-minute markets. The final bucket is excluded unless complete.
-    sim_start_ts = ceil_5m(int(start.timestamp()))
-    sim_end_ts = floor_5m(int(end.timestamp()))
-    fetch_start = dt.datetime.fromtimestamp(sim_start_ts - 300, UTC)
+    if entry_seconds_left >= interval_sec:
+        raise ValueError("--entry-seconds-left must be less than the simulated market interval")
+
+    # Align to completed markets. The final bucket is excluded unless complete.
+    sim_start_ts = ceil_interval(int(start.timestamp()), interval_sec)
+    sim_end_ts = floor_interval(int(end.timestamp()), interval_sec)
+    fetch_start = dt.datetime.fromtimestamp(sim_start_ts - interval_sec, UTC)
     fetch_end = dt.datetime.fromtimestamp(sim_end_ts + 60, UTC)
 
     data_started = time.perf_counter()
@@ -145,8 +150,8 @@ def simulate(args: argparse.Namespace) -> dict[str, Any]:
     equity_curve: list[dict[str, Any]] = []
 
     replay_started = time.perf_counter()
-    for bucket_start in range(sim_start_ts, sim_end_ts, 300):
-        bucket_end = bucket_start + 300
+    for bucket_start in range(sim_start_ts, sim_end_ts, interval_sec):
+        bucket_end = bucket_start + interval_sec
         entry_ts = bucket_end - int(entry_seconds_left)
         key = day_key(bucket_start)
 
@@ -187,7 +192,8 @@ def simulate(args: argparse.Namespace) -> dict[str, Any]:
 
         trade = {
             "sim_now_entry": iso(entry_ts),
-            "market_slug": f"btc-updown-5m-{bucket_start}",
+            "market_slug": f"btc-updown-{interval_minutes}m-{bucket_start}",
+            "market_interval_minutes": interval_minutes,
             "market_start": iso(bucket_start),
             "market_end": iso(bucket_end),
             "interval_open_btc": round(interval_open, 2),
@@ -217,7 +223,8 @@ def simulate(args: argparse.Namespace) -> dict[str, Any]:
         "mode": "virtual_backtest",
         "data_source": "Coinbase Exchange BTC-USD 1m candles",
         "lookahead_note": "Entry decisions use only the interval open and the candle at simulated entry time; settlement uses the real later close.",
-        "market_model_note": "This approximates Polymarket 5m binaries with a fixed virtual entry price. It does not replay historical CLOB order-book liquidity.",
+        "market_model_note": f"This approximates BTC {interval_minutes}-minute Up/Down binaries with a fixed virtual entry price. It does not replay historical exchange order-book liquidity.",
+        "kalshi_note": "Kalshi BTC 15-minute markets settle from CF Benchmarks RTI averaged during the last minute. This simulator uses Coinbase 1-minute candles, so Kalshi settlement is approximate.",
         "simulated_present_started_at": iso(sim_start_ts),
         "simulated_present_finished_at": iso(sim_end_ts),
         "wall_clock_seconds": round(data_elapsed + replay_elapsed, 3),
@@ -225,6 +232,7 @@ def simulate(args: argparse.Namespace) -> dict[str, Any]:
         "replay_seconds": round(replay_elapsed, 3),
         "params": {
             "profile": args.profile,
+            "interval_minutes": interval_minutes,
             "starting_cash": args.starting_cash,
             "stake_usd": stake_usd,
             "threshold_price": threshold_price,
@@ -234,7 +242,7 @@ def simulate(args: argparse.Namespace) -> dict[str, Any]:
             "days": args.days,
         },
         "summary": {
-            "markets_replayed": max(0, (sim_end_ts - sim_start_ts) // 300),
+            "markets_replayed": max(0, (sim_end_ts - sim_start_ts) // interval_sec),
             "trades": len(trades),
             "wins": wins,
             "losses": losses,
@@ -268,16 +276,17 @@ def write_csv(path: Path, trades: list[dict[str, Any]]) -> None:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Fast virtual-money replay for BTC 5-minute Up/Down strategy.")
+    ap = argparse.ArgumentParser(description="Fast virtual-money replay for BTC Up/Down strategy.")
     ap.add_argument("--profile", choices=sorted(PROFILES), default="conservative")
+    ap.add_argument("--interval-minutes", type=int, choices=[5, 15], default=15, help="Simulated BTC Up/Down market interval.")
     ap.add_argument("--days", type=float, default=7.0, help="Lookback length when --start is omitted.")
     ap.add_argument("--start", help="UTC start timestamp, for example 2026-06-27T00:00:00Z.")
     ap.add_argument("--end", help="UTC end timestamp. Defaults to current wall-clock time.")
     ap.add_argument("--starting-cash", type=float, default=100.0)
     ap.add_argument("--stake-usd", type=float)
-    ap.add_argument("--threshold-price", type=float, help="Virtual Polymarket entry price paid per share.")
+    ap.add_argument("--threshold-price", type=float, help="Virtual exchange entry price paid per share.")
     ap.add_argument("--min-btc-move-usd", type=float, help="Required BTC move by simulated entry time.")
-    ap.add_argument("--entry-seconds-left", type=int, help="Simulated entry point before each 5m market close.")
+    ap.add_argument("--entry-seconds-left", type=int, help="Simulated entry point before each market close.")
     ap.add_argument("--max-trades", type=int, help="Max virtual trades per UTC day.")
     ap.add_argument("--preview-trades", type=int, default=25)
     ap.add_argument("--include-trades", action="store_true", help="Print all trades in the JSON report.")

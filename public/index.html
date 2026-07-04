@@ -3,15 +3,15 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>BTC 5m Dashboard</title>
+    <title>Kalshi BTC Up/Down Dashboard</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <main class="app-shell">
       <header class="topbar">
         <div>
-          <p class="eyebrow">BTC 5m Polymarket</p>
-          <h1>Strategy Dashboard</h1>
+          <p class="eyebrow">Kalshi BTC 15-minute</p>
+          <h1>Up/Down Dashboard</h1>
         </div>
         <nav class="tabs" aria-label="Dashboard pages">
           <button class="tab-button active" type="button" data-page="simulationPage">Simulation</button>
@@ -30,6 +30,14 @@
           </div>
 
           <form id="simForm" class="form-grid">
+            <label>
+              Market interval
+              <select name="intervalMinutes">
+                <option value="15">15 minutes (Kalshi)</option>
+                <option value="5">5 minutes comparison</option>
+              </select>
+            </label>
+
             <label>
               Profile
               <select name="profile">
@@ -74,7 +82,7 @@
             </label>
 
             <label>
-              Virtual entry price
+              Virtual contract price
               <input name="thresholdPrice" type="number" min="0.01" max="0.99" step="0.01" value="0.70" inputmode="decimal" />
             </label>
 
