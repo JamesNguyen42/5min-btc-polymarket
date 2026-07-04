@@ -10,3 +10,9 @@ services:
         value: 0.0.0.0
       - key: FRONTEND_ORIGIN
         sync: false
+      - key: KALSHI_ENV
+        value: demo
+      - key: KALSHI_API_KEY_ID
+        sync: false
+      - key: KALSHI_PRIVATE_KEY
+        sync: false

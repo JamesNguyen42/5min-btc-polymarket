@@ -71,6 +71,51 @@ as inactive until a live trading worker is connected. The kill switch defaults t
 on. Supported fail-safes include max daily loss, max total loss, max stake per
 trade, and max trades per day.
 
+## Kalshi API Keys
+Kalshi authenticated requests use:
+
+- `KALSHI_API_KEY_ID` - your API key ID
+- `KALSHI_PRIVATE_KEY` - the RSA private key PEM
+- `KALSHI_ENV` - `demo` or `prod`
+
+For local development:
+
+```bash
+copy .env.example .env
+```
+
+Then edit `.env`. Keep `KALSHI_ENV=demo` until you intentionally switch to
+production. For the private key, either paste it with escaped newlines:
+
+```text
+KALSHI_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
+```
+
+or point to a local key file:
+
+```text
+KALSHI_PRIVATE_KEY_PATH=./secrets/kalshi.key
+```
+
+Do not commit `.env` or private key files. The frontend never receives these
+values.
+
+After starting the backend, test credential signing with:
+
+```text
+http://127.0.0.1:3000/api/kalshi/status
+```
+
+On Render, set these as environment variables on the backend service:
+
+```text
+KALSHI_ENV=demo
+KALSHI_API_KEY_ID=<your key id>
+KALSHI_PRIVATE_KEY=<your private key PEM>
+```
+
+Switch `KALSHI_ENV=prod` only after paper mode and fail-safes are working.
+
 Run the same simulation directly in the terminal:
 
 ```bash

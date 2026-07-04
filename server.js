@@ -1,12 +1,18 @@
 const http = require("http");
+const https = require("https");
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
+
+loadLocalEnv(path.join(ROOT, ".env"));
+
 const START_PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || (process.env.RENDER ? "0.0.0.0" : "127.0.0.1");
+const KALSHI_API_PREFIX = "/trade-api/v2";
 const FRONTEND_ORIGINS = String(process.env.FRONTEND_ORIGIN || "")
   .split(",")
   .map((origin) => origin.trim())
@@ -41,6 +47,33 @@ const MIME = {
   ".js": "application/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
 };
+
+function loadLocalEnv(filePath) {
+  if (!fs.existsSync(filePath)) return;
+  const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    let value = trimmed.slice(eq + 1).trim();
+    if (key === "KALSHI_PRIVATE_KEY" && value.includes("BEGIN") && !value.includes("END")) {
+      const pemLines = [value];
+      while (i + 1 < lines.length) {
+        i += 1;
+        pemLines.push(lines[i]);
+        if (lines[i].includes("END") && lines[i].includes("PRIVATE KEY")) break;
+      }
+      value = pemLines.join("\n");
+    }
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    if (!process.env[key]) process.env[key] = value;
+  }
+}
 
 function corsHeaders(req) {
   const origin = req.headers.origin;
@@ -104,6 +137,101 @@ function normalizeTradingSettings(input) {
     maxStakeUsd: asNumber(input.maxStakeUsd, current.maxStakeUsd, 0.01, 1_000_000),
     maxTradesPerDay: Math.round(asNumber(input.maxTradesPerDay, current.maxTradesPerDay, 1, 10_000)),
   };
+}
+
+function kalshiBaseUrl() {
+  if (process.env.KALSHI_API_BASE_URL) return process.env.KALSHI_API_BASE_URL.replace(/\/$/, "");
+  return process.env.KALSHI_ENV === "prod"
+    ? `https://external-api.kalshi.com${KALSHI_API_PREFIX}`
+    : `https://external-api.demo.kalshi.co${KALSHI_API_PREFIX}`;
+}
+
+function kalshiPrivateKeyPem() {
+  if (process.env.KALSHI_PRIVATE_KEY_PATH) {
+    const p = path.resolve(ROOT, process.env.KALSHI_PRIVATE_KEY_PATH);
+    return fs.readFileSync(p, "utf8");
+  }
+  if (process.env.KALSHI_PRIVATE_KEY_BASE64) {
+    return Buffer.from(process.env.KALSHI_PRIVATE_KEY_BASE64, "base64").toString("utf8");
+  }
+  if (process.env.KALSHI_PRIVATE_KEY) {
+    return process.env.KALSHI_PRIVATE_KEY.replace(/\\n/g, "\n");
+  }
+  return "";
+}
+
+function createKalshiPrivateKey() {
+  const keyText = kalshiPrivateKeyPem().trim();
+  if (!keyText) {
+    throw new Error("Kalshi credentials are not configured");
+  }
+  if (keyText.includes("-----BEGIN")) {
+    return crypto.createPrivateKey(keyText);
+  }
+
+  const der = Buffer.from(keyText.replace(/\s/g, ""), "base64");
+  try {
+    return crypto.createPrivateKey({ key: der, format: "der", type: "pkcs1" });
+  } catch (pkcs1Error) {
+    try {
+      return crypto.createPrivateKey({ key: der, format: "der", type: "pkcs8" });
+    } catch {
+      throw pkcs1Error;
+    }
+  }
+}
+
+function kalshiAuthHeaders(method, apiPath) {
+  const keyId = process.env.KALSHI_API_KEY_ID || "";
+  if (!keyId || !kalshiPrivateKeyPem()) {
+    throw new Error("Kalshi credentials are not configured");
+  }
+  const timestamp = String(Date.now());
+  const pathOnly = `${KALSHI_API_PREFIX}${apiPath.split("?")[0]}`;
+  const message = `${timestamp}${method.toUpperCase()}${pathOnly}`;
+  const signature = crypto.sign("sha256", Buffer.from(message), {
+    key: createKalshiPrivateKey(),
+    padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
+  });
+  return {
+    "KALSHI-ACCESS-KEY": keyId,
+    "KALSHI-ACCESS-TIMESTAMP": timestamp,
+    "KALSHI-ACCESS-SIGNATURE": signature.toString("base64"),
+  };
+}
+
+function kalshiRequest(method, apiPath) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(`${kalshiBaseUrl()}${apiPath}`);
+    const req = https.request(
+      url,
+      {
+        method,
+        headers: kalshiAuthHeaders(method, apiPath),
+      },
+      (res) => {
+        let body = "";
+        res.on("data", (chunk) => {
+          body += chunk.toString();
+        });
+        res.on("end", () => {
+          let parsed = null;
+          try {
+            parsed = body ? JSON.parse(body) : null;
+          } catch {
+            parsed = body;
+          }
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            reject(new Error(`Kalshi ${res.statusCode}: ${typeof parsed === "string" ? parsed : JSON.stringify(parsed)}`));
+            return;
+          }
+          resolve(parsed);
+        });
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
 }
 
 function buildSimArgs(input) {
@@ -214,6 +342,35 @@ async function handle(req, res) {
 
   if (req.method === "GET" && req.url === "/api/trading/status") {
     sendJson(req, res, 200, tradingState);
+    return;
+  }
+
+  if (req.method === "GET" && req.url === "/api/kalshi/status") {
+    const configured = Boolean(process.env.KALSHI_API_KEY_ID && kalshiPrivateKeyPem());
+    if (!configured) {
+      sendJson(req, res, 200, {
+        configured: false,
+        env: process.env.KALSHI_ENV || "demo",
+        baseUrl: kalshiBaseUrl(),
+      });
+      return;
+    }
+    try {
+      const balance = await kalshiRequest("GET", "/portfolio/balance");
+      sendJson(req, res, 200, {
+        configured: true,
+        env: process.env.KALSHI_ENV || "demo",
+        baseUrl: kalshiBaseUrl(),
+        balance,
+      });
+    } catch (err) {
+      sendJson(req, res, 500, {
+        configured: true,
+        env: process.env.KALSHI_ENV || "demo",
+        baseUrl: kalshiBaseUrl(),
+        error: err.message || String(err),
+      });
+    }
     return;
   }
 
