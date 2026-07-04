@@ -71,6 +71,15 @@ as inactive until a live trading worker is connected. The kill switch defaults t
 on. Supported fail-safes include max daily loss, max total loss, max stake per
 trade, and max trades per day.
 
+Paper worker behavior:
+
+- Uses live Kalshi `KXBTC15M` market data.
+- Places simulated entries only; it never posts real orders.
+- Requires mode `Paper` and kill switch off before it starts.
+- Stops automatically if any fail-safe is hit.
+- Uses the authenticated Kalshi balance as the starting paper equity when
+  available.
+
 ## Kalshi API Keys
 Kalshi authenticated requests use:
 

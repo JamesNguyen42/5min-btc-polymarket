@@ -249,9 +249,38 @@ button:focus-visible {
   background: var(--accent-strong);
 }
 
-.primary-button:disabled {
+.primary-button:disabled,
+.secondary-button:disabled,
+.danger-button:disabled {
   cursor: wait;
   opacity: 0.7;
+}
+
+.action-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.secondary-button,
+.danger-button {
+  min-height: 44px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 900;
+}
+
+.secondary-button {
+  border: 1px solid var(--accent);
+  background: #eff8f4;
+  color: var(--accent-strong);
+}
+
+.danger-button {
+  border: 1px solid #efb4ad;
+  background: #fff1ef;
+  color: var(--loss);
 }
 
 .play-icon {

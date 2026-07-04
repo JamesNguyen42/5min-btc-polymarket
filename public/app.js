@@ -4,6 +4,8 @@ const statusBadge = document.querySelector("#statusBadge");
 const killSwitchBadge = document.querySelector("#killSwitchBadge");
 const runButton = document.querySelector("#runButton");
 const saveSafetyButton = document.querySelector("#saveSafetyButton");
+const startPaperButton = document.querySelector("#startPaperButton");
+const stopPaperButton = document.querySelector("#stopPaperButton");
 const returnValue = document.querySelector("#returnValue");
 const rangeText = document.querySelector("#rangeText");
 const endingCash = document.querySelector("#endingCash");
@@ -19,6 +21,7 @@ const liveReturn = document.querySelector("#liveReturn");
 const tradingMode = document.querySelector("#tradingMode");
 const liveTradeRows = document.querySelector("#liveTradeRows");
 const API_BASE_URL = String(window.SIM_CONFIG?.apiBaseUrl || "").replace(/\/$/, "");
+let tradingRefreshTimer = null;
 
 function apiPath(path) {
   return `${API_BASE_URL}${path}`;
@@ -184,6 +187,15 @@ function renderTradingStatus(state) {
   tradingNote.textContent = state.note || `Updated ${shortDate(state.updatedAt)}`;
   setStatus(killSwitchBadge, state.killSwitch === false ? "Unprotected" : "Protected", state.killSwitch === false ? "running" : "error");
   renderLiveTrades(state.recentTrades);
+  startPaperButton.disabled = state.workerStatus === "active";
+  stopPaperButton.disabled = state.workerStatus !== "active";
+  if (state.workerStatus === "active" && !tradingRefreshTimer) {
+    tradingRefreshTimer = setInterval(loadTradingStatus, 5000);
+  }
+  if (state.workerStatus !== "active" && tradingRefreshTimer) {
+    clearInterval(tradingRefreshTimer);
+    tradingRefreshTimer = null;
+  }
 }
 
 async function runSimulation(event) {
@@ -250,9 +262,26 @@ async function saveSafetySettings(event) {
   }
 }
 
+async function postTradingAction(path, button, label) {
+  button.disabled = true;
+  button.textContent = "Working";
+  try {
+    const response = await fetch(apiPath(path), { method: "POST" });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "trading action failed");
+    renderTradingStatus(payload);
+  } catch (err) {
+    tradingNote.textContent = err.message || String(err);
+  } finally {
+    button.textContent = label;
+  }
+}
+
 document.querySelectorAll(".tab-button").forEach((button) => {
   button.addEventListener("click", () => showPage(button.dataset.page));
 });
 simForm.addEventListener("submit", runSimulation);
 safetyForm.addEventListener("submit", saveSafetySettings);
+startPaperButton.addEventListener("click", () => postTradingAction("/api/trading/start", startPaperButton, "Start paper worker"));
+stopPaperButton.addEventListener("click", () => postTradingAction("/api/trading/stop", stopPaperButton, "Stop worker"));
 loadTradingStatus();
