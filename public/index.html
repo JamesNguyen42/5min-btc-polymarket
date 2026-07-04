@@ -3,125 +3,247 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>BTC 5m Virtual Simulator</title>
+    <title>BTC 5m Dashboard</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <main class="shell">
-      <section class="control-panel" aria-label="Simulation controls">
-        <div class="brand">
-          <div>
-            <p class="eyebrow">Virtual replay</p>
-            <h1>BTC 5m Simulator</h1>
-          </div>
-          <span id="statusBadge" class="status">Idle</span>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">BTC 5m Polymarket</p>
+          <h1>Strategy Dashboard</h1>
         </div>
+        <nav class="tabs" aria-label="Dashboard pages">
+          <button class="tab-button active" type="button" data-page="simulationPage">Simulation</button>
+          <button class="tab-button" type="button" data-page="tradingPage">Trading</button>
+        </nav>
+      </header>
 
-        <form id="simForm" class="form-grid">
-          <label>
-            Profile
-            <select name="profile">
-              <option value="conservative">Conservative</option>
-              <option value="aggressive">Aggressive</option>
-            </select>
-          </label>
+      <section id="simulationPage" class="page active">
+        <section class="control-panel" aria-label="Simulation controls">
+          <div class="section-title">
+            <div>
+              <p class="eyebrow">Virtual replay</p>
+              <h2>Simulation</h2>
+            </div>
+            <span id="statusBadge" class="status">Idle</span>
+          </div>
 
-          <label>
-            Lookback days
-            <input name="days" type="number" min="0.01" max="30" step="0.25" value="7" />
-          </label>
+          <form id="simForm" class="form-grid">
+            <label>
+              Profile
+              <select name="profile">
+                <option value="conservative">Conservative</option>
+                <option value="aggressive">Aggressive</option>
+              </select>
+            </label>
 
-          <label>
-            Start time
-            <input name="start" type="datetime-local" />
-          </label>
+            <label>
+              Lookback days
+              <input name="days" type="number" min="0.25" max="30" step="0.25" value="7" inputmode="decimal" />
+            </label>
 
-          <label>
-            End time
-            <input name="end" type="datetime-local" />
-          </label>
+            <label>
+              Start time
+              <input name="start" type="datetime-local" />
+            </label>
 
-          <label>
-            Starting money
-            <input name="startingCash" type="number" min="1" step="1" value="100" />
-          </label>
+            <label>
+              End time
+              <input name="end" type="datetime-local" />
+            </label>
 
-          <label>
-            Stake per trade
-            <input name="stakeUsd" type="number" min="0.01" step="0.5" value="5" />
-          </label>
+            <label>
+              Starting money
+              <input name="startingCash" type="number" min="1" step="1" value="100" inputmode="decimal" />
+            </label>
 
-          <label>
-            BTC move trigger
-            <input name="minBtcMoveUsd" type="number" min="0" step="5" value="70" />
-          </label>
+            <label>
+              Stake per trade
+              <input name="stakeUsd" type="number" min="0.01" step="0.01" value="5" inputmode="decimal" />
+            </label>
 
-          <label>
-            Entry seconds left
-            <input name="entrySecondsLeft" type="number" min="1" max="299" step="1" value="120" />
-          </label>
+            <label>
+              BTC move trigger
+              <input name="minBtcMoveUsd" type="number" min="0" step="1" value="70" inputmode="decimal" />
+            </label>
 
-          <label>
-            Virtual entry price
-            <input name="thresholdPrice" type="number" min="0.01" max="0.99" step="0.01" value="0.70" />
-          </label>
+            <label>
+              Entry seconds left
+              <input name="entrySecondsLeft" type="number" min="1" max="299" step="1" value="120" inputmode="numeric" />
+            </label>
 
-          <label>
-            Max trades per day
-            <input name="maxTrades" type="number" min="1" step="1" value="12" />
-          </label>
+            <label>
+              Virtual entry price
+              <input name="thresholdPrice" type="number" min="0.01" max="0.99" step="0.01" value="0.70" inputmode="decimal" />
+            </label>
 
-          <button id="runButton" class="run-button" type="submit">
-            <span class="play-icon" aria-hidden="true"></span>
-            Run simulation
-          </button>
-        </form>
+            <label>
+              Max trades per day
+              <input name="maxTrades" type="number" min="1" step="1" value="12" inputmode="numeric" />
+            </label>
+
+            <button id="runButton" class="primary-button" type="submit">
+              <span class="play-icon" aria-hidden="true"></span>
+              Run simulation
+            </button>
+          </form>
+        </section>
+
+        <section class="results" aria-label="Simulation results">
+          <div class="headline">
+            <div>
+              <p class="eyebrow">Result</p>
+              <p id="rangeText" class="muted">Choose settings and run the replay.</p>
+            </div>
+            <div id="returnValue" class="return-value neutral">--</div>
+          </div>
+
+          <div class="metrics">
+            <div class="metric">
+              <span>Ending money</span>
+              <strong id="endingCash">--</strong>
+            </div>
+            <div class="metric">
+              <span>PnL</span>
+              <strong id="pnl">--</strong>
+            </div>
+            <div class="metric">
+              <span>Win rate</span>
+              <strong id="winRate">--</strong>
+            </div>
+            <div class="metric">
+              <span>Trades</span>
+              <strong id="trades">--</strong>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Side</th>
+                  <th>Move</th>
+                  <th>Result</th>
+                  <th>PnL</th>
+                </tr>
+              </thead>
+              <tbody id="tradeRows">
+                <tr>
+                  <td colspan="5" class="empty">No simulation has been run.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
       </section>
 
-      <section class="results" aria-label="Simulation results">
-        <div class="headline">
-          <p class="eyebrow">Result</p>
-          <div id="returnValue" class="return-value neutral">--</div>
-          <p id="rangeText" class="muted">Choose settings and run the replay.</p>
-        </div>
+      <section id="tradingPage" class="page">
+        <section class="control-panel" aria-label="Trading fail-safe controls">
+          <div class="section-title">
+            <div>
+              <p class="eyebrow">Live controls</p>
+              <h2>Fail-Safes</h2>
+            </div>
+            <span id="killSwitchBadge" class="status error">Protected</span>
+          </div>
 
-        <div class="metrics">
-          <div class="metric">
-            <span>Ending money</span>
-            <strong id="endingCash">--</strong>
-          </div>
-          <div class="metric">
-            <span>PnL</span>
-            <strong id="pnl">--</strong>
-          </div>
-          <div class="metric">
-            <span>Win rate</span>
-            <strong id="winRate">--</strong>
-          </div>
-          <div class="metric">
-            <span>Trades</span>
-            <strong id="trades">--</strong>
-          </div>
-        </div>
+          <form id="safetyForm" class="form-grid">
+            <label>
+              Mode
+              <select name="mode">
+                <option value="paper">Paper</option>
+                <option value="live">Live</option>
+              </select>
+            </label>
 
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Time</th>
-                <th>Side</th>
-                <th>Move</th>
-                <th>Result</th>
-                <th>PnL</th>
-              </tr>
-            </thead>
-            <tbody id="tradeRows">
-              <tr>
-                <td colspan="5" class="empty">No simulation has been run.</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+            <label class="checkbox-label">
+              <input name="killSwitch" type="checkbox" checked />
+              Kill switch on
+            </label>
+
+            <label>
+              Max daily loss $
+              <input name="maxDailyLossUsd" type="number" min="0" step="1" value="25" inputmode="decimal" />
+            </label>
+
+            <label>
+              Max daily loss %
+              <input name="maxDailyLossPct" type="number" min="0" max="100" step="0.5" value="10" inputmode="decimal" />
+            </label>
+
+            <label>
+              Max total loss $
+              <input name="maxTotalLossUsd" type="number" min="0" step="1" value="50" inputmode="decimal" />
+            </label>
+
+            <label>
+              Max total loss %
+              <input name="maxTotalLossPct" type="number" min="0" max="100" step="0.5" value="20" inputmode="decimal" />
+            </label>
+
+            <label>
+              Max stake per trade
+              <input name="maxStakeUsd" type="number" min="0.01" step="0.01" value="5" inputmode="decimal" />
+            </label>
+
+            <label>
+              Max trades per day
+              <input name="maxTradesPerDay" type="number" min="1" step="1" value="12" inputmode="numeric" />
+            </label>
+
+            <button id="saveSafetyButton" class="primary-button" type="submit">Save fail-safes</button>
+          </form>
+        </section>
+
+        <section class="results" aria-label="Trading monitor">
+          <div class="headline">
+            <div>
+              <p class="eyebrow">Monitor</p>
+              <p id="tradingNote" class="muted">Loading trading status.</p>
+            </div>
+            <div id="workerStatus" class="return-value neutral">--</div>
+          </div>
+
+          <div class="metrics">
+            <div class="metric">
+              <span>Current equity</span>
+              <strong id="currentEquity">--</strong>
+            </div>
+            <div class="metric">
+              <span>Realized PnL</span>
+              <strong id="realizedPnl">--</strong>
+            </div>
+            <div class="metric">
+              <span>Return</span>
+              <strong id="liveReturn">--</strong>
+            </div>
+            <div class="metric">
+              <span>Mode</span>
+              <strong id="tradingMode">--</strong>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Market</th>
+                  <th>Side</th>
+                  <th>Status</th>
+                  <th>PnL</th>
+                </tr>
+              </thead>
+              <tbody id="liveTradeRows">
+                <tr>
+                  <td colspan="5" class="empty">No live worker trades yet.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
       </section>
     </main>
 

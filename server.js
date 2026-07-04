@@ -11,6 +11,29 @@ const FRONTEND_ORIGINS = String(process.env.FRONTEND_ORIGIN || "")
   .split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
+const tradingState = {
+  mode: "paper",
+  workerStatus: "inactive",
+  killSwitch: true,
+  updatedAt: new Date().toISOString(),
+  balances: {
+    startingCash: 0,
+    currentEquity: 0,
+    realizedPnl: 0,
+    returnPct: 0,
+  },
+  limits: {
+    maxDailyLossUsd: 25,
+    maxDailyLossPct: 10,
+    maxTotalLossUsd: 50,
+    maxTotalLossPct: 20,
+    maxStakeUsd: 5,
+    maxTradesPerDay: 12,
+  },
+  lastTrade: null,
+  recentTrades: [],
+  note: "Live trading worker is not connected yet. These fail-safe settings are saved for the backend and ready for the worker integration.",
+};
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -69,6 +92,18 @@ function normalizeDateTime(value) {
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return null;
   return d.toISOString().replace(".000Z", "Z");
+}
+
+function normalizeTradingSettings(input) {
+  const current = tradingState.limits;
+  return {
+    maxDailyLossUsd: asNumber(input.maxDailyLossUsd, current.maxDailyLossUsd, 0, 1_000_000),
+    maxDailyLossPct: asNumber(input.maxDailyLossPct, current.maxDailyLossPct, 0, 100),
+    maxTotalLossUsd: asNumber(input.maxTotalLossUsd, current.maxTotalLossUsd, 0, 1_000_000),
+    maxTotalLossPct: asNumber(input.maxTotalLossPct, current.maxTotalLossPct, 0, 100),
+    maxStakeUsd: asNumber(input.maxStakeUsd, current.maxStakeUsd, 0.01, 1_000_000),
+    maxTradesPerDay: Math.round(asNumber(input.maxTradesPerDay, current.maxTradesPerDay, 1, 10_000)),
+  };
 }
 
 function buildSimArgs(input) {
@@ -170,6 +205,26 @@ async function handle(req, res) {
 
   if (req.method === "GET" && req.url === "/health") {
     sendJson(req, res, 200, { ok: true });
+    return;
+  }
+
+  if (req.method === "GET" && req.url === "/api/trading/status") {
+    sendJson(req, res, 200, tradingState);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/trading/settings") {
+    try {
+      const raw = await readBody(req);
+      const input = raw ? JSON.parse(raw) : {};
+      tradingState.mode = input.mode === "live" ? "live" : "paper";
+      tradingState.killSwitch = input.killSwitch !== false;
+      tradingState.limits = normalizeTradingSettings(input);
+      tradingState.updatedAt = new Date().toISOString();
+      sendJson(req, res, 200, tradingState);
+    } catch (err) {
+      sendJson(req, res, 500, { error: err.message || String(err) });
+    }
     return;
   }
 

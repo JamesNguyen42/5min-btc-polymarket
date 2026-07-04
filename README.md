@@ -72,6 +72,16 @@ The UI lets you set the simulation time range, starting money, stake size, and
 signal parameters. It reports ending money, PnL, win rate, trade count, and
 percentage gain/loss.
 
+Dashboard pages:
+
+- Simulation: replay historical BTC 5-minute windows with virtual money.
+- Trading: monitor worker status and save fail-safe limits for live/paper mode.
+
+The Trading page currently stores backend fail-safe settings and shows the worker
+as inactive until a live trading worker is connected. The kill switch defaults to
+on. Supported fail-safes include max daily loss, max total loss, max stake per
+trade, and max trades per day.
+
 Run the same simulation directly in the terminal:
 
 ```bash
