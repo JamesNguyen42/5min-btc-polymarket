@@ -1,0 +1,11 @@
+{
+  "name": "5min-btc-polymarket",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "node scripts/write_runtime_config.js",
+    "dev": "node server.js",
+    "start": "node server.js",
+    "sim": "python scripts/simulate_btc_5m_virtual.py --days 7 --profile conservative --out runtime/btc5m_virtual_backtest.json --csv runtime/btc5m_virtual_backtest.csv"
+  }
+}

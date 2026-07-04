@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BTC 5m Virtual Simulator</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="control-panel" aria-label="Simulation controls">
+        <div class="brand">
+          <div>
+            <p class="eyebrow">Virtual replay</p>
+            <h1>BTC 5m Simulator</h1>
+          </div>
+          <span id="statusBadge" class="status">Idle</span>
+        </div>
+
+        <form id="simForm" class="form-grid">
+          <label>
+            Profile
+            <select name="profile">
+              <option value="conservative">Conservative</option>
+              <option value="aggressive">Aggressive</option>
+            </select>
+          </label>
+
+          <label>
+            Lookback days
+            <input name="days" type="number" min="0.01" max="30" step="0.25" value="7" />
+          </label>
+
+          <label>
+            Start time
+            <input name="start" type="datetime-local" />
+          </label>
+
+          <label>
+            End time
+            <input name="end" type="datetime-local" />
+          </label>
+
+          <label>
+            Starting money
+            <input name="startingCash" type="number" min="1" step="1" value="100" />
+          </label>
+
+          <label>
+            Stake per trade
+            <input name="stakeUsd" type="number" min="0.01" step="0.5" value="5" />
+          </label>
+
+          <label>
+            BTC move trigger
+            <input name="minBtcMoveUsd" type="number" min="0" step="5" value="70" />
+          </label>
+
+          <label>
+            Entry seconds left
+            <input name="entrySecondsLeft" type="number" min="1" max="299" step="1" value="120" />
+          </label>
+
+          <label>
+            Virtual entry price
+            <input name="thresholdPrice" type="number" min="0.01" max="0.99" step="0.01" value="0.70" />
+          </label>
+
+          <label>
+            Max trades per day
+            <input name="maxTrades" type="number" min="1" step="1" value="12" />
+          </label>
+
+          <button id="runButton" class="run-button" type="submit">
+            <span class="play-icon" aria-hidden="true"></span>
+            Run simulation
+          </button>
+        </form>
+      </section>
+
+      <section class="results" aria-label="Simulation results">
+        <div class="headline">
+          <p class="eyebrow">Result</p>
+          <div id="returnValue" class="return-value neutral">--</div>
+          <p id="rangeText" class="muted">Choose settings and run the replay.</p>
+        </div>
+
+        <div class="metrics">
+          <div class="metric">
+            <span>Ending money</span>
+            <strong id="endingCash">--</strong>
+          </div>
+          <div class="metric">
+            <span>PnL</span>
+            <strong id="pnl">--</strong>
+          </div>
+          <div class="metric">
+            <span>Win rate</span>
+            <strong id="winRate">--</strong>
+          </div>
+          <div class="metric">
+            <span>Trades</span>
+            <strong id="trades">--</strong>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Side</th>
+                <th>Move</th>
+                <th>Result</th>
+                <th>PnL</th>
+              </tr>
+            </thead>
+            <tbody id="tradeRows">
+              <tr>
+                <td colspan="5" class="empty">No simulation has been run.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script src="/runtime-config.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>

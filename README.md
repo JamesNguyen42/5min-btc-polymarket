@@ -50,6 +50,122 @@ Run aggressive profile:
 .venv/bin/python scripts/test_btc_5m_session_exit_sl.py --profile aggressive --execute
 ```
 
+## Fast Virtual-Money Simulation
+To replay the last week as if each historical 5-minute market were happening "now",
+use the virtual simulator. It fetches real BTC-USD 1-minute candles, steps forward
+chronologically with no sleeps, places virtual trades only from data visible at the
+simulated entry time, and settles each market from the real later close.
+
+Start the browser UI:
+
+```bash
+npm run dev
+```
+
+Then open:
+
+```text
+http://localhost:3000
+```
+
+The UI lets you set the simulation time range, starting money, stake size, and
+signal parameters. It reports ending money, PnL, win rate, trade count, and
+percentage gain/loss.
+
+Run the same simulation directly in the terminal:
+
+```bash
+python scripts/simulate_btc_5m_virtual.py --days 7 --profile conservative
+```
+
+Save a report and full trade ledger:
+
+```bash
+python scripts/simulate_btc_5m_virtual.py --days 7 --profile conservative --out runtime/btc5m_virtual_backtest.json --csv runtime/btc5m_virtual_backtest.csv
+```
+
+Useful knobs:
+- `--starting-cash 100` sets virtual bankroll.
+- `--stake-usd 5` sets virtual stake per trade.
+- `--min-btc-move-usd 70` requires a BTC move by the simulated entry time.
+- `--entry-seconds-left 120` makes the strategy decide with about 2 minutes left.
+- `--threshold-price 0.70` sets the assumed virtual Polymarket entry price.
+
+Important limitation: this is a BTC-driven Polymarket-style binary simulation, not
+a full historical CLOB replay. It uses real BTC candles and real future settlement
+within each historical 5-minute bucket, but it does not reconstruct historical
+Polymarket order-book liquidity, spreads, or fill probability.
+
+## Deploy: Render Backend + Vercel Frontend
+This repo is configured for a split deployment:
+
+- Render runs the Node API and Python simulator from `Dockerfile`.
+- Vercel serves the static dashboard from `public/`.
+
+### 1. Push the repo
+Commit and push these files to GitHub before creating services:
+
+```bash
+git add .
+git commit -m "Add simulator dashboard deployment config"
+git push origin main
+```
+
+### 2. Deploy the backend on Render
+Use Render Blueprint deployment with `render.yaml`, or create a Web Service from
+the repo manually.
+
+Blueprint link format:
+
+```text
+https://dashboard.render.com/blueprint/new?repo=https://github.com/<user>/<repo>
+```
+
+Render should use:
+
+- Runtime: Docker
+- Health check path: `/health`
+- Service type: Web Service
+- Plan: paid/always-on recommended for backend availability
+
+Set this Render environment variable after the Vercel site exists:
+
+```text
+FRONTEND_ORIGIN=https://your-vercel-app.vercel.app
+```
+
+Keep the Render service URL. It will look like:
+
+```text
+https://btc5m-simulator-api.onrender.com
+```
+
+### 3. Deploy the frontend on Vercel
+Import the same GitHub repo into Vercel.
+
+Recommended settings:
+
+- Framework Preset: Other
+- Root Directory: `./`
+- Build Command: `npm run build`
+- Output Directory: `public`
+
+Set this Vercel environment variable:
+
+```text
+SIM_API_BASE_URL=https://your-render-service.onrender.com
+```
+
+Redeploy Vercel after setting `SIM_API_BASE_URL`.
+
+### 4. Confirm the connection
+Open the Vercel URL, run a short simulation, and confirm the result panel updates.
+If it fails, check:
+
+- Render `/health` returns `{ "ok": true }`
+- Vercel `SIM_API_BASE_URL` exactly matches the Render service URL
+- Render `FRONTEND_ORIGIN` exactly matches the Vercel site origin
+
 Unified skill control (recommended):
 ```bash
 scripts/btc5m_ctl.sh start --profile conservative
