@@ -557,6 +557,43 @@ button:focus-visible {
   max-height: 292px;
 }
 
+.transaction-window table {
+  table-layout: fixed;
+}
+
+.transaction-window th,
+.transaction-window td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.transaction-window th:nth-child(1),
+.transaction-window td:nth-child(1) {
+  width: 118px;
+}
+
+.transaction-window th:nth-child(2),
+.transaction-window td:nth-child(2) {
+  width: auto;
+  min-width: 0;
+}
+
+.transaction-window th:nth-child(3),
+.transaction-window td:nth-child(3) {
+  width: 74px;
+}
+
+.transaction-window th:nth-child(4),
+.transaction-window td:nth-child(4) {
+  width: 136px;
+}
+
+.transaction-window th:nth-child(5),
+.transaction-window td:nth-child(5) {
+  width: 86px;
+  text-align: right;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -638,6 +675,31 @@ td {
 
   .compare-monitor-head {
     display: block;
+  }
+
+  .transaction-window th,
+  .transaction-window td {
+    padding: 11px 9px;
+  }
+
+  .transaction-window th:nth-child(1),
+  .transaction-window td:nth-child(1) {
+    width: 94px;
+  }
+
+  .transaction-window th:nth-child(3),
+  .transaction-window td:nth-child(3) {
+    width: 58px;
+  }
+
+  .transaction-window th:nth-child(4),
+  .transaction-window td:nth-child(4) {
+    width: 104px;
+  }
+
+  .transaction-window th:nth-child(5),
+  .transaction-window td:nth-child(5) {
+    width: 74px;
   }
 }
 
