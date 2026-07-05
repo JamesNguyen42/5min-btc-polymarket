@@ -1,16 +1,27 @@
 :root {
-  color-scheme: light;
-  --bg: #f4f6f1;
-  --panel: #ffffff;
-  --ink: #18211b;
-  --muted: #657268;
-  --line: #dce3dc;
-  --soft: #f9fbf8;
-  --accent: #176b5b;
-  --accent-strong: #104c42;
-  --gain: #137b41;
-  --loss: #b42318;
-  --warn: #8a5c00;
+  color-scheme: dark;
+  --bg: #0d100f;
+  --panel: #171c1a;
+  --panel-soft: #111614;
+  --field: #202722;
+  --field-strong: #253028;
+  --ink: #f2f6f1;
+  --muted: #a8b5ab;
+  --line: #303a34;
+  --soft: #131916;
+  --accent: #54bd9a;
+  --accent-strong: #7bddb7;
+  --accent-ink: #07110d;
+  --gain: #72df9b;
+  --loss: #ff8b7f;
+  --warn: #f0c96a;
+  --warn-bg: #2b2312;
+  --gain-bg: #13271a;
+  --loss-bg: #311917;
+  --odds-track: #27312b;
+  --odds-up: #55c29c;
+  --odds-down: #d98173;
+  --shadow: rgba(0, 0, 0, 0.32);
 }
 
 * {
@@ -23,6 +34,7 @@ body {
   background: var(--bg);
   color: var(--ink);
   font-family: Arial, Helvetica, sans-serif;
+  scrollbar-color: #647268 var(--panel-soft);
 }
 
 button,
@@ -30,6 +42,16 @@ input,
 select {
   font: inherit;
   min-width: 0;
+}
+
+input,
+select,
+button {
+  accent-color: var(--accent);
+}
+
+::placeholder {
+  color: #7f8d84;
 }
 
 .app-shell {
@@ -52,7 +74,7 @@ select {
   grid-template-columns: repeat(2, 1fr);
   gap: 4px;
   padding: 4px;
-  background: #e8eee8;
+  background: var(--panel-soft);
   border: 1px solid var(--line);
   border-radius: 8px;
   min-width: 0;
@@ -73,7 +95,7 @@ select {
 .tab-button.active {
   background: var(--panel);
   color: var(--ink);
-  box-shadow: 0 1px 2px rgba(24, 33, 27, 0.08);
+  box-shadow: 0 1px 2px var(--shadow);
 }
 
 .page {
@@ -167,20 +189,20 @@ h2 {
 
 .status.running {
   color: var(--warn);
-  border-color: #e8c774;
-  background: #fff7df;
+  border-color: #6d5721;
+  background: var(--warn-bg);
 }
 
 .status.done {
   color: var(--gain);
-  border-color: #9bd4ae;
-  background: #effaf2;
+  border-color: #2c7a4d;
+  background: var(--gain-bg);
 }
 
 .status.error {
   color: var(--loss);
-  border-color: #efb4ad;
-  background: #fff1ef;
+  border-color: #7e3934;
+  background: var(--loss-bg);
 }
 
 .form-grid {
@@ -207,7 +229,7 @@ label {
   padding: 9px 10px;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: #fbfcfa;
+  background: var(--field);
   color: var(--ink);
 }
 
@@ -225,7 +247,7 @@ label {
   padding: 10px;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: #fbfcfa;
+  background: var(--field);
   min-width: 0;
 }
 
@@ -246,7 +268,7 @@ label {
   gap: 8px;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: #ffffff;
+  background: var(--field-strong);
   color: var(--ink);
 }
 
@@ -262,7 +284,7 @@ select {
   min-height: 42px;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: #fbfcfa;
+  background: var(--field);
   color: var(--ink);
   padding: 9px 10px;
 }
@@ -270,7 +292,7 @@ select {
 input:focus,
 select:focus,
 button:focus-visible {
-  outline: 3px solid rgba(23, 107, 91, 0.18);
+  outline: 3px solid rgba(84, 189, 154, 0.24);
   border-color: var(--accent);
 }
 
@@ -282,7 +304,7 @@ button:focus-visible {
   border: 0;
   border-radius: 6px;
   background: var(--accent);
-  color: #ffffff;
+  color: var(--accent-ink);
   cursor: pointer;
   font-weight: 900;
   display: inline-flex;
@@ -337,13 +359,13 @@ button:focus-visible {
 
 .secondary-button {
   border: 1px solid var(--accent);
-  background: #eff8f4;
+  background: #13251f;
   color: var(--accent-strong);
 }
 
 .danger-button {
-  border: 1px solid #efb4ad;
-  background: #fff1ef;
+  border: 1px solid #7e3934;
+  background: var(--loss-bg);
   color: var(--loss);
 }
 
@@ -427,7 +449,7 @@ button:focus-visible {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr));
   border-bottom: 1px solid var(--line);
-  background: #fbfcfa;
+  background: var(--panel-soft);
 }
 
 .comparison-panel[hidden] {
@@ -445,7 +467,7 @@ button:focus-visible {
 }
 
 .comparison-item.muted-card {
-  background: #f3f5f1;
+  background: #141a17;
 }
 
 .comparison-item span,
@@ -482,7 +504,7 @@ button:focus-visible {
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 999px;
-  background: #eef2ed;
+  background: var(--odds-track);
 }
 
 .odds-bar {
@@ -490,11 +512,11 @@ button:focus-visible {
 }
 
 .odds-bar.up {
-  background: #2f7a61;
+  background: var(--odds-up);
 }
 
 .odds-bar.down {
-  background: #c46b5f;
+  background: var(--odds-down);
 }
 
 .comparison-item.diagnostic-card strong.compact-value {
