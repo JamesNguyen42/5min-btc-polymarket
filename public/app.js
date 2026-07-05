@@ -112,6 +112,26 @@ function shortAddress(value) {
   return text.length > 13 ? `${text.slice(0, 6)}...${text.slice(-4)}` : text;
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function tradeErrorText(trade) {
+  const apiError = trade?.api_error?.error?.message || trade?.api_error?.message || "";
+  return String(trade?.error || apiError || "").trim();
+}
+
+function tradeStatusText(trade) {
+  const status = String(trade?.status || "--");
+  const error = tradeErrorText(trade);
+  return error ? `${status}: ${error}` : status;
+}
+
 function signatureTypeScanText(items) {
   const rows = Array.isArray(items) ? items : [];
   const summaries = rows.map((item) => (item.error ? `${item.signatureType}: error` : `${item.signatureType}: ${money(item.availableCash)}`));
@@ -413,12 +433,14 @@ function renderLiveTrades(items) {
     .map((trade) => {
       const value = Number(trade.pnl_usd || 0);
       const resultClass = value > 0 ? "win" : value < 0 ? "lose" : "neutral-cell";
+      const status = tradeStatusText(trade);
+      const error = tradeErrorText(trade);
       return `
         <tr>
           <td>${shortDate(trade.ts)}</td>
           <td>${trade.strategy ? `${trade.strategy} ` : ""}${trade.market || "--"}</td>
           <td>${trade.side || "--"}</td>
-          <td>${trade.status || "--"}</td>
+          <td title="${escapeHtml(error)}">${escapeHtml(status)}</td>
           <td class="${resultClass}">${money(value)}</td>
         </tr>
       `;
@@ -437,13 +459,15 @@ function renderCompareTrades(items) {
     .map((trade) => {
       const value = Number(trade.pnl_usd || 0);
       const resultClass = value > 0 ? "win" : value < 0 ? "lose" : "neutral-cell";
+      const status = tradeStatusText(trade);
+      const error = tradeErrorText(trade);
       return `
         <tr>
           <td>${shortDate(trade.ts)}</td>
           <td>${trade.market || "--"}</td>
           <td>${trade.strategy || "--"}</td>
           <td>${trade.side || "--"}</td>
-          <td>${trade.status || "--"}</td>
+          <td title="${escapeHtml(error)}">${escapeHtml(status)}</td>
           <td class="${resultClass}">${money(value)}</td>
         </tr>
       `;
@@ -511,12 +535,14 @@ function renderPolymarketTrades(items) {
     .map((trade) => {
       const value = Number(trade.pnl_usd || 0);
       const resultClass = value > 0 ? "win" : value < 0 ? "lose" : "neutral-cell";
+      const status = tradeStatusText(trade);
+      const error = tradeErrorText(trade);
       return `
         <tr>
           <td>${shortDate(trade.ts)}</td>
           <td>${trade.strategy ? `${trade.strategy} ` : ""}${trade.market || "--"}</td>
           <td>${trade.side || "--"}</td>
-          <td>${trade.status || "--"}</td>
+          <td title="${escapeHtml(error)}">${escapeHtml(status)}</td>
           <td class="${resultClass}">${money(value)}</td>
         </tr>
       `;
@@ -535,13 +561,15 @@ function renderPolymarketCompareTrades(items) {
     .map((trade) => {
       const value = Number(trade.pnl_usd || 0);
       const resultClass = value > 0 ? "win" : value < 0 ? "lose" : "neutral-cell";
+      const status = tradeStatusText(trade);
+      const error = tradeErrorText(trade);
       return `
         <tr>
           <td>${shortDate(trade.ts)}</td>
           <td>${trade.market || "--"}</td>
           <td>${trade.strategy || "--"}</td>
           <td>${trade.side || "--"}</td>
-          <td>${trade.status || "--"}</td>
+          <td title="${escapeHtml(error)}">${escapeHtml(status)}</td>
           <td class="${resultClass}">${money(value)}</td>
         </tr>
       `;
