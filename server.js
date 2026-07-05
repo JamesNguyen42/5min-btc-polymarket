@@ -356,9 +356,13 @@ function normalizeTradingSettings(input) {
   };
 }
 
+function kalshiEnv() {
+  return process.env.KALSHI_ENV === "prod" ? "prod" : "demo";
+}
+
 function kalshiBaseUrl() {
   if (process.env.KALSHI_API_BASE_URL) return process.env.KALSHI_API_BASE_URL.replace(/\/$/, "");
-  return process.env.KALSHI_ENV === "prod"
+  return kalshiEnv() === "prod"
     ? `https://external-api.kalshi.com${KALSHI_API_PREFIX}`
     : `https://external-api.demo.kalshi.co${KALSHI_API_PREFIX}`;
 }
@@ -534,21 +538,95 @@ async function currentKalshiBalanceDollars() {
 }
 
 async function fetchCurrentBtc15mMarket() {
+  return (await fetchCurrentBtc15mMarketDetails()).market;
+}
+
+function marketCloseTimestamp(market) {
+  return Date.parse(market?.close_time || market?.expected_expiration_time || "");
+}
+
+function marketOpenTimestamp(market) {
+  const parsed = Date.parse(market?.open_time || market?.created_time || "");
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isUsableLiveMarket(market, now = Date.now()) {
+  const closeTs = marketCloseTimestamp(market);
+  if (!Number.isFinite(closeTs) || closeTs <= now) return false;
+  const openTs = marketOpenTimestamp(market);
+  if (openTs > now) return false;
+  const status = String(market?.status || "").toLowerCase();
+  return status !== "closed" && status !== "settled" && status !== "finalized";
+}
+
+function selectCurrentBtc15mMarket(markets, now = Date.now()) {
+  return (Array.isArray(markets) ? markets : [])
+    .filter((market) => isUsableLiveMarket(market, now))
+    .sort((a, b) => marketCloseTimestamp(a) - marketCloseTimestamp(b))[0] || null;
+}
+
+function newestReturnedMarket(markets) {
+  return (Array.isArray(markets) ? markets : [])
+    .filter((market) => Number.isFinite(marketCloseTimestamp(market)))
+    .sort((a, b) => marketCloseTimestamp(b) - marketCloseTimestamp(a))[0] || null;
+}
+
+function summarizeKalshiMarket(market) {
+  if (!market) return null;
+  return {
+    ticker: market.ticker || null,
+    status: market.status || null,
+    openTime: market.open_time || null,
+    closeTime: market.close_time || market.expected_expiration_time || null,
+  };
+}
+
+function noCurrentBtc15mMarketMessage(details = {}) {
+  const env = details.env || kalshiEnv();
+  const latest = summarizeKalshiMarket(details.latestMarket);
+  if (env !== "prod") {
+    return `No active ${KALSHI_BTC15M_SERIES} market found on Kalshi demo. Set KALSHI_ENV=prod for production live markets.`;
+  }
+  if (latest) {
+    return `No active ${KALSHI_BTC15M_SERIES} market returned by Kalshi prod. Latest returned: ${latest.ticker || "unknown"} ${latest.status || "unknown"} closes ${latest.closeTime || "unknown"}.`;
+  }
+  return `No active ${KALSHI_BTC15M_SERIES} market returned by Kalshi prod.`;
+}
+
+async function fetchCurrentBtc15mMarketDetails() {
   const qs = new URLSearchParams({
     series_ticker: KALSHI_BTC15M_SERIES,
     status: "open",
-    limit: "10",
+    limit: "25",
   });
-  const data = await kalshiPublicRequest(`/markets?${qs.toString()}`);
-  const now = Date.now();
-  const markets = Array.isArray(data?.markets) ? data.markets : [];
-  return markets
-    .filter((market) => {
-      const openTs = Date.parse(market.open_time || market.created_time || "");
-      const closeTs = Date.parse(market.close_time || market.expected_expiration_time || "");
-      return Number.isFinite(openTs) && Number.isFinite(closeTs) && openTs <= now && closeTs > now;
-    })
-    .sort((a, b) => Date.parse(a.close_time) - Date.parse(b.close_time))[0] || null;
+  const openData = await kalshiPublicRequest(`/markets?${qs.toString()}`);
+  const openMarkets = Array.isArray(openData?.markets) ? openData.markets : [];
+  const market = selectCurrentBtc15mMarket(openMarkets);
+  if (market) {
+    return {
+      market,
+      env: kalshiEnv(),
+      source: "markets?status=open",
+      returnedMarkets: openMarkets.length,
+      latestMarket: newestReturnedMarket(openMarkets),
+    };
+  }
+
+  const fallbackQs = new URLSearchParams({
+    series_ticker: KALSHI_BTC15M_SERIES,
+    limit: "100",
+  });
+  const fallbackData = await kalshiPublicRequest(`/markets?${fallbackQs.toString()}`);
+  const fallbackMarkets = Array.isArray(fallbackData?.markets) ? fallbackData.markets : [];
+  const fallbackMarket = selectCurrentBtc15mMarket(fallbackMarkets);
+  const combinedMarkets = [...openMarkets, ...fallbackMarkets];
+  return {
+    market: fallbackMarket,
+    env: kalshiEnv(),
+    source: fallbackMarket ? "markets?series_ticker" : null,
+    returnedMarkets: combinedMarkets.length,
+    latestMarket: newestReturnedMarket(combinedMarkets),
+  };
 }
 
 function kalshiMarketSnapshot(market) {
@@ -597,10 +675,11 @@ async function attachLiveMarketData(report, input) {
   }
 
   try {
-    const market = await fetchCurrentBtc15mMarket();
+    const marketDetails = await fetchCurrentBtc15mMarketDetails();
+    const market = marketDetails.market;
     const snapshot = kalshiMarketSnapshot(market);
     if (!snapshot) {
-      report.live_market_note = `No open ${KALSHI_BTC15M_SERIES} Kalshi market found.`;
+      report.live_market_note = noCurrentBtc15mMarketMessage(marketDetails);
       return report;
     }
     report.live_market = snapshot;
@@ -698,9 +777,10 @@ async function pollPaperWorker() {
 
     if (tradingState.activePosition) return;
 
-    const market = await fetchCurrentBtc15mMarket();
+    const marketDetails = await fetchCurrentBtc15mMarketDetails();
+    const market = marketDetails.market;
     if (!market) {
-      tradingState.note = `No open ${KALSHI_BTC15M_SERIES} market found. Last checked ${tradingState.lastPollAt}.`;
+      tradingState.note = `${noCurrentBtc15mMarketMessage(marketDetails)} Last checked ${tradingState.lastPollAt}.`;
       return;
     }
 
@@ -933,6 +1013,10 @@ async function pollLiveCompareWorker() {
     );
     compare.lastReport = report;
     compare.liveMarket = report.live_market || null;
+    if (!report.live_market) {
+      compare.note = report.live_market_note || noCurrentBtc15mMarketMessage();
+      return;
+    }
 
     const marketId = liveCompareMarketId(report);
     for (const strategy of COMPARE_STRATEGIES) {
@@ -1106,7 +1190,7 @@ function buildSimArgs(input) {
     if (start && end) {
       args.push("--start", start, "--end", end);
     } else {
-      args.push("--days", String(asNumber(input.days, 7, 0.01, 30)));
+      args.push("--days", String(asNumber(input.days, 7, 0.01, 365)));
     }
   }
   return args;
@@ -1208,7 +1292,7 @@ async function handle(req, res) {
     if (!configured) {
       sendJson(req, res, 200, {
         configured: false,
-        env: process.env.KALSHI_ENV || "demo",
+        env: kalshiEnv(),
         baseUrl: kalshiBaseUrl(),
       });
       return;
@@ -1217,14 +1301,14 @@ async function handle(req, res) {
       const balance = await kalshiRequest("GET", "/portfolio/balance");
       sendJson(req, res, 200, {
         configured: true,
-        env: process.env.KALSHI_ENV || "demo",
+        env: kalshiEnv(),
         baseUrl: kalshiBaseUrl(),
         balance,
       });
     } catch (err) {
       sendJson(req, res, 500, {
         configured: true,
-        env: process.env.KALSHI_ENV || "demo",
+        env: kalshiEnv(),
         baseUrl: kalshiBaseUrl(),
         error: err.message || String(err),
       });

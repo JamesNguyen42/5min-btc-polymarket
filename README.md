@@ -181,13 +181,15 @@ http://127.0.0.1:3000/api/kalshi/status
 On Render, set these as environment variables on the backend service:
 
 ```text
-KALSHI_ENV=demo
+KALSHI_ENV=prod
 KALSHI_API_KEY_ID=<your key id>
 KALSHI_PRIVATE_KEY=<your private key PEM>
 TRADING_STATE_FILE=/var/data/trading_state.json
 ```
 
-Switch `KALSHI_ENV=prod` only after paper mode and fail-safes are working.
+The Render Blueprint defaults to `KALSHI_ENV=prod` because the live market
+worker needs production `KXBTC15M` markets. The workers in this app still use
+paper fills only and do not post real orders.
 
 Run the same simulation directly in the terminal:
 

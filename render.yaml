@@ -17,7 +17,7 @@ services:
       - key: FRONTEND_ORIGIN
         sync: false
       - key: KALSHI_ENV
-        value: demo
+        value: prod
       - key: KALSHI_API_KEY_ID
         sync: false
       - key: KALSHI_PRIVATE_KEY
