@@ -16,6 +16,52 @@ This skill is aligned with a short-horizon momentum strategy:
 
 This is a momentum-following approach, not a reversal strategy.
 
+## V2 Strategy and Comparison
+This branch adds an explicit V2 simulator strategy and keeps V1 intact for
+side-by-side comparison.
+
+- **V1 baseline**: fixed entry timing, fixed BTC move threshold, fixed stake,
+  and fixed virtual contract entry price.
+- **V2 adaptive momentum**: dynamic BTC move threshold, pullback/reversal
+  checks, larger daily opportunity budget, and confidence-based sizing capped by
+  equity risk and a max stake multiplier.
+
+Run both strategies on the same BTC candles:
+
+```bash
+npm run sim:compare
+```
+
+Or call the simulator directly:
+
+```bash
+python scripts/simulate_btc_5m_virtual.py --days 7 --interval-minutes 15 --profile conservative --compare
+```
+
+Run the current-market V1/V2 signal from the terminal:
+
+```bash
+npm run sim:live
+```
+
+Live direct call:
+
+```bash
+python scripts/simulate_btc_5m_virtual.py --live --compare --interval-minutes 15 --profile conservative
+```
+
+The dashboard defaults to **Compare V1 vs V2** and shows V2 as the primary
+result while displaying the V1/V2 delta. The comparison is still a virtual
+backtest: it does not replay historical Kalshi order books, spreads, fees,
+liquidity, fill probability, or exact CF Benchmarks settlement values.
+
+For current-market data, switch the dashboard **Data mode** to **Live snapshot**.
+Live mode uses the latest completed Coinbase BTC-USD 1-minute candle inside the
+active interval and, for 15-minute markets, enriches the signal with the current
+open Kalshi `KXBTC15M` YES/NO ask prices when the public market API is
+available. It reports the current V1/V2 action, side, BTC move, seconds left,
+and live ask price, but it does not show PnL because the market has not settled.
+
 ## Repository Structure
 - `SKILL.md` — skill definition and operating rules
 - `config/` — profiles and risk parameters
@@ -129,6 +175,12 @@ Run the same simulation directly in the terminal:
 
 ```bash
 python scripts/simulate_btc_5m_virtual.py --days 7 --interval-minutes 15 --profile conservative
+```
+
+Run the V2 strategy only:
+
+```bash
+python scripts/simulate_btc_5m_virtual.py --days 7 --interval-minutes 15 --profile conservative --strategy v2
 ```
 
 Save a report and full trade ledger:

@@ -287,6 +287,13 @@ function dollars(value, fallback = null) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function dollarsOrCents(dollarValue, centValue, fallback = null) {
+  const dollar = dollars(dollarValue, null);
+  if (dollar !== null) return dollar;
+  const cents = dollars(centValue, null);
+  return cents !== null ? cents / 100 : fallback;
+}
+
 function utcDay(value = new Date()) {
   return value.toISOString().slice(0, 10);
 }
@@ -345,6 +352,80 @@ async function fetchCurrentBtc15mMarket() {
       return Number.isFinite(openTs) && Number.isFinite(closeTs) && openTs <= now && closeTs > now;
     })
     .sort((a, b) => Date.parse(a.close_time) - Date.parse(b.close_time))[0] || null;
+}
+
+function kalshiMarketSnapshot(market) {
+  if (!market) return null;
+  const closeTs = Date.parse(market.close_time || market.expected_expiration_time || "");
+  return {
+    source: "Kalshi public markets API",
+    seriesTicker: KALSHI_BTC15M_SERIES,
+    ticker: market.ticker || null,
+    eventTicker: market.event_ticker || null,
+    title: market.title || market.subtitle || null,
+    closeTime: market.close_time || market.expected_expiration_time || null,
+    secondsLeft: Number.isFinite(closeTs) ? Math.max(0, Math.round((closeTs - Date.now()) / 1000)) : null,
+    yesAsk: dollarsOrCents(market.yes_ask_dollars, market.yes_ask, null),
+    noAsk: dollarsOrCents(market.no_ask_dollars, market.no_ask, null),
+    yesBid: dollarsOrCents(market.yes_bid_dollars, market.yes_bid, null),
+    noBid: dollarsOrCents(market.no_bid_dollars, market.no_bid, null),
+    yesLast: dollarsOrCents(market.yes_price_dollars, market.yes_price, null),
+    noLast: dollarsOrCents(market.no_price_dollars, market.no_price, null),
+  };
+}
+
+function sideAskFromMarket(snapshot, side) {
+  if (!snapshot || !side) return null;
+  const normalized = String(side).toUpperCase();
+  if (normalized === "UP" || normalized === "YES") return snapshot.yesAsk;
+  if (normalized === "DOWN" || normalized === "NO") return snapshot.noAsk;
+  return null;
+}
+
+function enrichLiveSignal(signal, marketSnapshot) {
+  if (!signal || typeof signal !== "object") return;
+  const sideAsk = sideAskFromMarket(marketSnapshot, signal.side);
+  signal.live_market_price = sideAsk;
+  signal.live_market_side = signal.side === "UP" ? "YES" : signal.side === "DOWN" ? "NO" : null;
+}
+
+async function attachLiveMarketData(report, input) {
+  if (!report || typeof report !== "object" || !String(report.mode || "").startsWith("live_signal")) {
+    return report;
+  }
+  const intervalMinutes = Math.round(asNumber(input.intervalMinutes, 15, 5, 15)) === 5 ? 5 : 15;
+  if (intervalMinutes !== 15) {
+    report.live_market_note = "Kalshi live market enrichment is only available for the configured 15-minute BTC series.";
+    return report;
+  }
+
+  try {
+    const market = await fetchCurrentBtc15mMarket();
+    const snapshot = kalshiMarketSnapshot(market);
+    if (!snapshot) {
+      report.live_market_note = `No open ${KALSHI_BTC15M_SERIES} Kalshi market found.`;
+      return report;
+    }
+    report.live_market = snapshot;
+    enrichLiveSignal(report.signal, snapshot);
+    enrichLiveSignal(report.summary, snapshot);
+    if (report.strategies && typeof report.strategies === "object") {
+      for (const strategyReport of Object.values(report.strategies)) {
+        enrichLiveSignal(strategyReport.signal, snapshot);
+        enrichLiveSignal(strategyReport.summary, snapshot);
+        if (Array.isArray(strategyReport.trades)) {
+          for (const row of strategyReport.trades) enrichLiveSignal(row, snapshot);
+        }
+      }
+    }
+    if (Array.isArray(report.trades)) {
+      for (const row of report.trades) enrichLiveSignal(row, snapshot);
+    }
+    return report;
+  } catch (err) {
+    report.live_market_error = err.message || String(err);
+    return report;
+  }
 }
 
 async function fetchKalshiMarket(ticker) {
@@ -512,6 +593,8 @@ function stopPaperWorker(reason = "stopped") {
 
 function buildSimArgs(input) {
   const profile = input.profile === "aggressive" ? "aggressive" : "conservative";
+  const strategyMode = input.strategyMode === "v1" || input.strategyMode === "v2" ? input.strategyMode : "compare";
+  const dataMode = input.dataMode === "live" ? "live" : "historical";
   const intervalMinutes = Math.round(asNumber(input.intervalMinutes, 15, 5, 15)) === 5 ? 5 : 15;
   const intervalSeconds = intervalMinutes * 60;
   const args = [
@@ -536,12 +619,22 @@ function buildSimArgs(input) {
     "50",
   ];
 
-  const start = normalizeDateTime(input.start);
-  const end = normalizeDateTime(input.end);
-  if (start && end) {
-    args.push("--start", start, "--end", end);
+  if (strategyMode === "compare") {
+    args.push("--compare");
   } else {
-    args.push("--days", String(asNumber(input.days, 7, 0.01, 30)));
+    args.push("--strategy", strategyMode);
+  }
+
+  if (dataMode === "live") {
+    args.push("--live", "--live-min-seconds-left", "15");
+  } else {
+    const start = normalizeDateTime(input.start);
+    const end = normalizeDateTime(input.end);
+    if (start && end) {
+      args.push("--start", start, "--end", end);
+    } else {
+      args.push("--days", String(asNumber(input.days, 7, 0.01, 30)));
+    }
   }
   return args;
 }
@@ -688,7 +781,7 @@ async function handle(req, res) {
       const raw = await readBody(req);
       const input = raw ? JSON.parse(raw) : {};
       const report = await runSimulator(buildSimArgs(input));
-      sendJson(req, res, 200, report);
+      sendJson(req, res, 200, await attachLiveMarketData(report, input));
     } catch (err) {
       sendJson(req, res, 500, { error: err.message || String(err) });
     }

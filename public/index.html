@@ -39,10 +39,27 @@
             </label>
 
             <label>
+              Data mode
+              <select name="dataMode">
+                <option value="historical">Historical backtest</option>
+                <option value="live">Live snapshot</option>
+              </select>
+            </label>
+
+            <label>
               Profile
               <select name="profile">
                 <option value="conservative">Conservative</option>
                 <option value="aggressive">Aggressive</option>
+              </select>
+            </label>
+
+            <label>
+              Strategy
+              <select name="strategyMode">
+                <option value="compare">Compare V1 vs V2</option>
+                <option value="v2">V2 adaptive</option>
+                <option value="v1">V1 baseline</option>
               </select>
             </label>
 
@@ -109,32 +126,34 @@
 
           <div class="metrics">
             <div class="metric">
-              <span>Ending money</span>
+              <span id="metricLabel1">Ending money</span>
               <strong id="endingCash">--</strong>
             </div>
             <div class="metric">
-              <span>PnL</span>
+              <span id="metricLabel2">PnL</span>
               <strong id="pnl">--</strong>
             </div>
             <div class="metric">
-              <span>Win rate</span>
+              <span id="metricLabel3">Win rate</span>
               <strong id="winRate">--</strong>
             </div>
             <div class="metric">
-              <span>Trades</span>
+              <span id="metricLabel4">Trades</span>
               <strong id="trades">--</strong>
             </div>
           </div>
+
+          <div id="comparisonPanel" class="comparison-panel" hidden></div>
 
           <div class="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Time</th>
-                  <th>Side</th>
-                  <th>Move</th>
-                  <th>Result</th>
-                  <th>PnL</th>
+                  <th id="tradeHead1">Time</th>
+                  <th id="tradeHead2">Side</th>
+                  <th id="tradeHead3">Move</th>
+                  <th id="tradeHead4">Result</th>
+                  <th id="tradeHead5">PnL</th>
                 </tr>
               </thead>
               <tbody id="tradeRows">

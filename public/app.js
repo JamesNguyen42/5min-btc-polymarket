@@ -12,7 +12,17 @@ const endingCash = document.querySelector("#endingCash");
 const pnl = document.querySelector("#pnl");
 const winRate = document.querySelector("#winRate");
 const trades = document.querySelector("#trades");
+const metricLabel1 = document.querySelector("#metricLabel1");
+const metricLabel2 = document.querySelector("#metricLabel2");
+const metricLabel3 = document.querySelector("#metricLabel3");
+const metricLabel4 = document.querySelector("#metricLabel4");
 const tradeRows = document.querySelector("#tradeRows");
+const tradeHead1 = document.querySelector("#tradeHead1");
+const tradeHead2 = document.querySelector("#tradeHead2");
+const tradeHead3 = document.querySelector("#tradeHead3");
+const tradeHead4 = document.querySelector("#tradeHead4");
+const tradeHead5 = document.querySelector("#tradeHead5");
+const comparisonPanel = document.querySelector("#comparisonPanel");
 const workerStatus = document.querySelector("#workerStatus");
 const tradingNote = document.querySelector("#tradingNote");
 const currentEquity = document.querySelector("#currentEquity");
@@ -40,6 +50,16 @@ function pct(value) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
   const sign = Number(value) > 0 ? "+" : "";
   return `${sign}${Number(value).toFixed(2)}%`;
+}
+
+function price(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
+  return Number(value).toFixed(2);
+}
+
+function secondsText(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
+  return `${Math.max(0, Math.round(Number(value)))}s`;
 }
 
 function shortDate(value) {
@@ -76,7 +96,9 @@ function simFormData() {
   const data = Object.fromEntries(new FormData(simForm).entries());
   return {
     intervalMinutes: numberFromForm(data, "intervalMinutes"),
+    dataMode: data.dataMode || "historical",
     profile: data.profile,
+    strategyMode: data.strategyMode || "compare",
     days: numberFromForm(data, "days"),
     start: data.start || null,
     end: data.end || null,
@@ -103,7 +125,30 @@ function safetyFormData() {
   };
 }
 
+function setMetricLabels(labels) {
+  [metricLabel1, metricLabel2, metricLabel3, metricLabel4].forEach((label, index) => {
+    if (label) label.textContent = labels[index];
+  });
+}
+
+function setTableHeaders(labels) {
+  [tradeHead1, tradeHead2, tradeHead3, tradeHead4, tradeHead5].forEach((header, index) => {
+    if (header) header.textContent = labels[index];
+  });
+}
+
+function setHistoricalLabels() {
+  setMetricLabels(["Ending money", "PnL", "Win rate", "Trades"]);
+  setTableHeaders(["Time", "Side", "Move", "Result", "PnL"]);
+}
+
+function setLiveLabels() {
+  setMetricLabels(["Side", "BTC move", "Seconds left", "Market ask"]);
+  setTableHeaders(["Strategy", "Action", "Side", "Move", "Ask"]);
+}
+
 function renderTrades(items) {
+  setHistoricalLabels();
   if (!items || items.length === 0) {
     tradeRows.innerHTML = '<tr><td colspan="5" class="empty">No trades matched these settings.</td></tr>';
     return;
@@ -111,9 +156,9 @@ function renderTrades(items) {
 
   tradeRows.innerHTML = items
     .map((trade) => {
-      const won = Number(trade.pnl_usd) > 0;
-      const resultClass = won ? "win" : "lose";
-      const result = won ? "Win" : "Loss";
+      const value = Number(trade.pnl_usd || 0);
+      const resultClass = value > 0 ? "win" : value < 0 ? "lose" : "neutral-cell";
+      const result = value > 0 ? "Win" : value < 0 ? "Loss" : "Flat";
       return `
         <tr>
           <td>${shortDate(trade.sim_now_entry)}</td>
@@ -125,6 +170,109 @@ function renderTrades(items) {
       `;
     })
     .join("");
+}
+
+function renderComparison(report) {
+  if (!comparisonPanel) return;
+  const isBacktestComparison = report?.mode === "virtual_backtest_comparison" && report.strategies;
+  const isLiveComparison = report?.mode === "live_signal_comparison" && report.strategies;
+  if (!isBacktestComparison && !isLiveComparison) {
+    comparisonPanel.hidden = true;
+    comparisonPanel.innerHTML = "";
+    return;
+  }
+
+  if (isLiveComparison) {
+    const v1Signal = report.strategies.v1?.signal || {};
+    const v2Signal = report.strategies.v2?.signal || {};
+    const market = report.live_market || {};
+    comparisonPanel.hidden = false;
+    comparisonPanel.innerHTML = `
+      <div class="comparison-item">
+        <span>V1 live</span>
+        <strong>${v1Signal.action || "--"}</strong>
+        <small>${v1Signal.side || "--"} / ${money(v1Signal.move_at_entry_usd)}</small>
+      </div>
+      <div class="comparison-item">
+        <span>V2 live</span>
+        <strong>${v2Signal.action || "--"}</strong>
+        <small>${v2Signal.side || "--"} / ${money(v2Signal.move_at_entry_usd)}</small>
+      </div>
+      <div class="comparison-item">
+        <span>Kalshi ask</span>
+        <strong>${market.yesAsk === undefined && market.noAsk === undefined ? "--" : `${price(market.yesAsk)} / ${price(market.noAsk)}`}</strong>
+        <small>YES / NO</small>
+      </div>
+    `;
+    return;
+  }
+
+  const v1 = report.strategies.v1?.summary || {};
+  const v2 = report.strategies.v2?.summary || {};
+  const comparison = report.comparison || {};
+  const delta = Number(comparison.return_pct_delta || 0);
+  const deltaClass = delta > 0 ? "gain" : delta < 0 ? "loss" : "neutral";
+
+  comparisonPanel.hidden = false;
+  comparisonPanel.innerHTML = `
+    <div class="comparison-item">
+      <span>V1 baseline</span>
+      <strong>${pct(v1.return_pct)}</strong>
+      <small>${money(v1.ending_cash)} / ${v1.trades ?? "--"} trades</small>
+    </div>
+    <div class="comparison-item">
+      <span>V2 adaptive</span>
+      <strong>${pct(v2.return_pct)}</strong>
+      <small>${money(v2.ending_cash)} / ${v2.trades ?? "--"} trades</small>
+    </div>
+    <div class="comparison-item">
+      <span>V2 minus V1</span>
+      <strong class="${deltaClass}">${pct(comparison.return_pct_delta)}</strong>
+      <small>${money(comparison.ending_cash_delta_usd)} / ${comparison.trade_count_delta >= 0 ? "+" : ""}${comparison.trade_count_delta ?? "--"} trades</small>
+    </div>
+  `;
+}
+
+function renderLiveSignalRows(report) {
+  setLiveLabels();
+  const reports = report.strategies ? Object.values(report.strategies) : [report];
+  const rows = reports
+    .map((strategyReport) => {
+      const signal = strategyReport.signal || {};
+      const strategy = strategyReport.strategy?.id?.toUpperCase() || "--";
+      const actionClass = signal.action === "SIGNAL" ? "win" : signal.action === "TOO_LATE" ? "lose" : "neutral-cell";
+      return `
+        <tr>
+          <td>${strategy}</td>
+          <td class="${actionClass}">${signal.action || "--"}</td>
+          <td>${signal.side || "--"}</td>
+          <td>${money(signal.move_at_entry_usd)}</td>
+          <td>${price(signal.live_market_price ?? signal.model_entry_price)}</td>
+        </tr>
+      `;
+    })
+    .join("");
+  tradeRows.innerHTML = rows || '<tr><td colspan="5" class="empty">No live signal is available yet.</td></tr>';
+}
+
+function renderLiveSignalReport(report) {
+  const isComparison = report?.mode === "live_signal_comparison" && report.strategies;
+  const primaryReport = isComparison ? report.strategies.v2 || report : report;
+  const signal = primaryReport.signal || report.signal || {};
+  const action = signal.action || "--";
+  const actionClass = action === "SIGNAL" ? "gain" : action === "TOO_LATE" ? "loss" : "neutral";
+  const intervalMinutes = primaryReport.params?.interval_minutes || report.params?.interval_minutes || "--";
+  const status = signal.status || report.live_market_note || report.live_market_error || "live snapshot";
+
+  returnValue.textContent = action;
+  returnValue.className = `return-value ${actionClass}`;
+  endingCash.textContent = signal.side || "--";
+  pnl.textContent = money(signal.move_at_entry_usd);
+  winRate.textContent = secondsText(signal.seconds_left);
+  trades.textContent = price(signal.live_market_price ?? signal.model_entry_price);
+  rangeText.textContent = `Live ${intervalMinutes}m | latest ${shortDate(report.latest_candle_at)} | ends ${shortDate(report.market_end)} | ${status}`;
+  renderComparison(report);
+  renderLiveSignalRows(report);
 }
 
 function renderLiveTrades(items) {
@@ -151,8 +299,17 @@ function renderLiveTrades(items) {
 }
 
 function renderReport(report) {
-  const summary = report.summary || {};
+  if (report?.mode === "live_signal" || report?.mode === "live_signal_comparison") {
+    renderLiveSignalReport(report);
+    return;
+  }
+
+  const isComparison = report?.mode === "virtual_backtest_comparison" && report.strategies;
+  const primaryReport = isComparison ? report.strategies.v2 || report : report;
+  const summary = primaryReport.summary || report.summary || {};
   const returnPct = Number(summary.return_pct || 0);
+  const intervalMinutes = primaryReport.params?.interval_minutes || report.params?.interval_minutes || "--";
+  const rangePrefix = isComparison ? "Compare V1 vs V2 | V2 table shown" : primaryReport.strategy?.label || "Strategy";
 
   returnValue.textContent = pct(returnPct);
   returnValue.className = `return-value ${returnPct > 0 ? "gain" : returnPct < 0 ? "loss" : "neutral"}`;
@@ -160,8 +317,9 @@ function renderReport(report) {
   pnl.textContent = money(summary.total_pnl_usd);
   winRate.textContent = summary.win_rate === null || summary.win_rate === undefined ? "--" : pct(summary.win_rate * 100);
   trades.textContent = summary.trades ?? "--";
-  rangeText.textContent = `${report.params?.interval_minutes || "--"}m | ${shortDate(report.simulated_present_started_at)} to ${shortDate(report.simulated_present_finished_at)} | ${summary.markets_replayed || 0} markets replayed`;
-  renderTrades(report.trades);
+  rangeText.textContent = `${rangePrefix} | ${intervalMinutes}m | ${shortDate(report.simulated_present_started_at)} to ${shortDate(report.simulated_present_finished_at)} | ${summary.markets_replayed || 0} markets replayed`;
+  renderComparison(report);
+  renderTrades(primaryReport.trades || report.trades);
 }
 
 function fillSafetyForm(state) {
