@@ -23,7 +23,7 @@
         <section class="control-panel" aria-label="Trading fail-safe controls">
           <div class="section-title">
             <div>
-              <p class="eyebrow">Live controls</p>
+              <p class="eyebrow">Kalshi live controls</p>
               <h2>Fail-Safes</h2>
             </div>
             <span id="killSwitchBadge" class="status error">Protected</span>
@@ -76,7 +76,7 @@
               <input name="maxTradesPerDay" type="number" min="1" step="1" value="12" inputmode="numeric" />
             </label>
 
-            <button id="saveSafetyButton" class="primary-button" type="submit">Save live settings</button>
+            <button id="saveSafetyButton" class="primary-button" type="submit">Save Kalshi settings only</button>
           </form>
         </section>
 
@@ -101,8 +101,8 @@
           </div>
 
           <div class="action-row panel-actions">
-            <button id="startPaperButton" class="secondary-button" type="button">Start Kalshi live</button>
-            <button id="stopPaperButton" class="danger-button" type="button">Stop Kalshi</button>
+            <button id="startPaperButton" class="secondary-button" type="button">Start Kalshi live trading</button>
+            <button id="stopPaperButton" class="danger-button" type="button">Stop Kalshi live trading</button>
           </div>
 
           <div class="table-wrap transaction-window">
@@ -129,7 +129,7 @@
           <div class="section-title">
             <div>
               <p class="eyebrow">Polymarket BTC 5-minute</p>
-              <h2>Live Trading</h2>
+              <h2>Polymarket Trading</h2>
             </div>
             <span id="polymarketModeBadge" class="status">Paper</span>
           </div>
@@ -170,13 +170,13 @@
               </label>
             </fieldset>
 
-            <button id="savePolymarketButton" class="primary-button" type="submit">Save Polymarket live settings</button>
+            <button id="savePolymarketButton" class="primary-button" type="submit">Save Polymarket settings only</button>
           </form>
 
-          <div class="action-row">
-            <button id="armPolymarketLiveButton" class="secondary-button" type="button">Arm Polymarket live</button>
-            <button id="paperPolymarketButton" class="danger-button" type="button">Back to paper</button>
-            <button id="stopPolymarketButton" class="danger-button" type="button">Stop Polymarket</button>
+          <div class="action-row live-action-row">
+            <button id="armPolymarketLiveButton" class="secondary-button live-start-button" type="button">Start Polymarket live trading</button>
+            <button id="paperPolymarketButton" class="danger-button" type="button">Switch Polymarket to paper</button>
+            <button id="stopPolymarketButton" class="danger-button" type="button">Stop Polymarket live trading</button>
           </div>
         </section>
 

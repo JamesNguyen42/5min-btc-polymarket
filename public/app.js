@@ -606,6 +606,7 @@ function renderPolymarketStatus(polymarket) {
   if (polymarketReturn) polymarketReturn.textContent = pct(primaryAccount.returnPct);
   if (polymarketMode) polymarketMode.textContent = `${state.mode || "paper"} / ${primaryStrategy.toUpperCase()}`;
 
+  if (armPolymarketLiveButton) armPolymarketLiveButton.disabled = liveArmed;
   if (stopPolymarketButton) stopPolymarketButton.disabled = !active;
   if (paperPolymarketButton) paperPolymarketButton.disabled = state.mode !== "live" && !liveArmed;
   if (startPolyCompareButton) startPolyCompareButton.disabled = active || liveArmed;
@@ -837,7 +838,7 @@ async function saveSafetySettings(event) {
     tradingNote.textContent = err.message || String(err);
   } finally {
     saveSafetyButton.disabled = false;
-    saveSafetyButton.textContent = "Save live settings";
+    saveSafetyButton.textContent = "Save Kalshi settings only";
   }
 }
 
@@ -856,7 +857,7 @@ async function savePolymarketSettings(event) {
     polymarketNote.textContent = err.message || String(err);
   } finally {
     savePolymarketButton.disabled = false;
-    savePolymarketButton.textContent = "Save Polymarket live settings";
+    savePolymarketButton.textContent = "Save Polymarket settings only";
   }
 }
 
@@ -923,7 +924,7 @@ async function startPaperWorker() {
   startPaperButton.textContent = "Saving settings";
   try {
     await persistSafetySettings();
-    startPaperButton.textContent = "Starting Kalshi";
+    startPaperButton.textContent = "Starting Kalshi live";
     const response = await fetch(apiPath("/api/trading/start"), { method: "POST" });
     const payload = await response.json();
     if (!response.ok) {
@@ -936,7 +937,7 @@ async function startPaperWorker() {
     tradingNote.textContent = err.message || String(err);
   } finally {
     if (!started) startPaperButton.disabled = false;
-    startPaperButton.textContent = "Start Kalshi live";
+    startPaperButton.textContent = "Start Kalshi live trading";
   }
 }
 
@@ -991,8 +992,9 @@ async function startPolyCompareWorker() {
 
 async function armPolymarketLive() {
   if (!polymarketForm.reportValidity()) return;
+  let armed = false;
   armPolymarketLiveButton.disabled = true;
-  armPolymarketLiveButton.textContent = "Arming";
+  armPolymarketLiveButton.textContent = "Starting Polymarket live";
   try {
     await persistPolymarketSettings(polymarketForm, "live");
     const response = await fetch(apiPath("/api/polymarket/arm-live"), { method: "POST" });
@@ -1003,11 +1005,12 @@ async function armPolymarketLive() {
     }
     fillPolymarketForm(payload);
     renderTradingStatus(payload);
+    armed = payload.polymarket?.mode === "live" && payload.polymarket?.liveArmed === true;
   } catch (err) {
     polymarketNote.textContent = err.message || String(err);
   } finally {
-    armPolymarketLiveButton.disabled = false;
-    armPolymarketLiveButton.textContent = "Arm Polymarket live";
+    armPolymarketLiveButton.disabled = armed;
+    armPolymarketLiveButton.textContent = "Start Polymarket live trading";
   }
 }
 
@@ -1018,13 +1021,13 @@ simForm.addEventListener("submit", runSimulation);
 safetyForm.addEventListener("submit", saveSafetySettings);
 polymarketForm.addEventListener("submit", savePolymarketSettings);
 startPaperButton.addEventListener("click", startPaperWorker);
-stopPaperButton.addEventListener("click", () => postTradingAction("/api/trading/stop", stopPaperButton, "Stop Kalshi"));
+stopPaperButton.addEventListener("click", () => postTradingAction("/api/trading/stop", stopPaperButton, "Stop Kalshi live trading"));
 startCompareButton.addEventListener("click", startCompareWorker);
 stopCompareButton.addEventListener("click", () =>
   postTradingAction("/api/trading/live-compare/stop", stopCompareButton, "Stop Kalshi compare"),
 );
 stopPolymarketButton.addEventListener("click", () =>
-  postTradingAction("/api/polymarket/stop", stopPolymarketButton, "Stop Polymarket"),
+  postTradingAction("/api/polymarket/stop", stopPolymarketButton, "Stop Polymarket live trading"),
 );
 startPolyCompareButton.addEventListener("click", startPolyCompareWorker);
 stopPolyCompareButton.addEventListener("click", () =>
@@ -1032,6 +1035,6 @@ stopPolyCompareButton.addEventListener("click", () =>
 );
 armPolymarketLiveButton.addEventListener("click", armPolymarketLive);
 paperPolymarketButton.addEventListener("click", () =>
-  postTradingAction("/api/polymarket/paper-mode", paperPolymarketButton, "Back to paper"),
+  postTradingAction("/api/polymarket/paper-mode", paperPolymarketButton, "Switch Polymarket to paper"),
 );
 loadTradingStatus();
