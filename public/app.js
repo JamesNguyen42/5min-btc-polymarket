@@ -102,6 +102,12 @@ function shortDate(value) {
   });
 }
 
+function shortAddress(value) {
+  const text = String(value || "").trim();
+  if (!text) return "--";
+  return text.length > 13 ? `${text.slice(0, 6)}...${text.slice(-4)}` : text;
+}
+
 function numberFromForm(data, key) {
   const value = Number(data[key]);
   return Number.isFinite(value) ? value : undefined;
@@ -380,6 +386,7 @@ function renderLiveSignalReport(report) {
 }
 
 function renderLiveTrades(items) {
+  if (!liveTradeRows) return;
   if (!items || items.length === 0) {
     liveTradeRows.innerHTML = '<tr><td colspan="5" class="empty">No worker trades yet.</td></tr>';
     return;
@@ -552,6 +559,12 @@ function renderPolymarketStatus(polymarket) {
       `;
     }).join("");
     const market = state.liveMarket || {};
+    const balanceHint =
+      Number(accountBalance.availableCash || 0) === 0 && !accountBalance.error
+        ? "Check signer/funder"
+        : accountBalance.error
+          ? "Balance error"
+          : "CLOB balance";
     polymarketPanel.innerHTML = `
       ${cards}
       <div class="comparison-item">
@@ -563,6 +576,16 @@ function renderPolymarketStatus(polymarket) {
         <span>Polymarket ask</span>
         <strong>${market.upAsk === undefined && market.downAsk === undefined ? "--" : `${price(market.upAsk)} / ${price(market.downAsk)}`}</strong>
         <small>UP / DOWN</small>
+      </div>
+      <div class="comparison-item">
+        <span>Balance source</span>
+        <strong>${balanceHint}</strong>
+        <small>raw ${accountBalance.rawBalance ?? "--"} / allowance ${accountBalance.rawAllowance ?? "--"}</small>
+      </div>
+      <div class="comparison-item">
+        <span>Signer / funder</span>
+        <strong>${shortAddress(accountBalance.signerAddress)} / ${shortAddress(accountBalance.funderAddress)}</strong>
+        <small>type ${accountBalance.signatureType ?? "--"} / ${accountBalance.apiCredsSource || "--"} / ${shortDate(accountBalance.checkedAt)}</small>
       </div>
     `;
   }
@@ -639,8 +662,8 @@ function renderTradingStatus(state) {
   tradingMode.textContent = state.mode || "--";
   if (kalshiEquityLabel) kalshiEquityLabel.textContent = state.mode === "live" ? "Account balance" : "Paper equity";
   currentEquity.textContent = state.mode === "live" ? money(accountBalance.availableCash) : money(balances.currentEquity);
-  realizedPnl.textContent = money(balances.realizedPnl);
-  liveReturn.textContent = pct(balances.returnPct);
+  if (realizedPnl) realizedPnl.textContent = money(balances.realizedPnl);
+  if (liveReturn) liveReturn.textContent = pct(balances.returnPct);
   tradingNote.textContent =
     state.mode === "live" && accountBalance.error
       ? `${state.note || `Updated ${shortDate(state.updatedAt)}`} Balance: ${accountBalance.error}`

@@ -1,8 +1,11 @@
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 import { AssetType, ClobClient } from "@polymarket/clob-client-v2";
 import { createWalletClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { polygon } from "viem/chains";
+
+const PUSD_DECIMALS = 1_000_000n;
 
 function requireEnv(name, fallback = "") {
   const value = process.env[name] || fallback;
@@ -28,21 +31,46 @@ function normalizePrivateKey(value) {
   return value.startsWith("0x") ? value : `0x${value}`;
 }
 
-function collateralUnits(raw) {
+function decimalStringToNumber(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function microUnitsToNumber(units) {
+  const sign = units < 0n ? -1 : 1;
+  const absUnits = units < 0n ? -units : units;
+  const whole = absUnits / PUSD_DECIMALS;
+  const fraction = absUnits % PUSD_DECIMALS;
+  const parsed = Number(`${whole}.${fraction.toString().padStart(6, "0")}`);
+  return Number.isFinite(parsed) ? parsed * sign : null;
+}
+
+export function collateralUnits(raw, unit = process.env.POLYMARKET_BALANCE_UNIT || "auto") {
   if (raw === null || raw === undefined || raw === "") return null;
-  const text = String(raw);
+  const text = String(raw).trim();
+  if (!text) return null;
   if (text.includes(".") || text.toLowerCase().includes("e")) {
-    const parsed = Number(text);
-    return Number.isFinite(parsed) ? parsed : null;
+    return decimalStringToNumber(text);
   }
   try {
     const units = BigInt(text);
-    const whole = units / 1_000_000n;
-    const fraction = units % 1_000_000n;
-    return Number(`${whole}.${fraction.toString().padStart(6, "0")}`);
+    const normalizedUnit = String(unit || "auto").toLowerCase();
+    if (normalizedUnit === "micro" || normalizedUnit === "microusd" || normalizedUnit === "raw") {
+      return microUnitsToNumber(units);
+    }
+    if (normalizedUnit === "dollars" || normalizedUnit === "usd") {
+      return decimalStringToNumber(text);
+    }
+
+    // CLOB versions have returned collateral either as direct pUSD strings
+    // ("8") or 6-decimal token units ("8000000"). Values with 6+ integer
+    // digits are treated as token units; smaller whole numbers are dollars.
+    if (text.replace(/^-/, "").length >= 6) {
+      return microUnitsToNumber(units);
+    }
+    return decimalStringToNumber(text);
   } catch {
-    const parsed = Number(text);
-    return Number.isFinite(parsed) ? parsed : null;
+    return decimalStringToNumber(text);
   }
 }
 
@@ -57,9 +85,11 @@ async function main() {
   const signer = createWalletClient({ account, chain, transport: http() });
 
   let creds = apiCredsFromEnv();
+  let apiCredsSource = "env";
   if (!creds) {
     const keyClient = new ClobClient({ host, chain: chainId, signer });
     creds = await keyClient.createOrDeriveApiKey();
+    apiCredsSource = "derived";
   }
 
   const signatureType = Number(envAny(["POLYMARKET_SIGNATURE_TYPE", "PM_SIGNATURE_TYPE"], "3"));
@@ -79,7 +109,21 @@ async function main() {
     signatureType,
     funderAddress,
   });
-  const balance = await client.getBalanceAllowance({ asset_type: AssetType.COLLATERAL });
+  const balanceParams = { asset_type: AssetType.COLLATERAL };
+  let balance = await client.getBalanceAllowance(balanceParams);
+  let refreshed = false;
+  let refreshError = null;
+
+  if (collateralUnits(balance.balance) === 0 || process.env.POLYMARKET_REFRESH_BALANCE_ON_READ === "1") {
+    try {
+      await client.updateBalanceAllowance(balanceParams);
+      refreshed = true;
+      balance = await client.getBalanceAllowance(balanceParams);
+    } catch (err) {
+      refreshError = err.message || String(err);
+    }
+  }
+
   const rawAllowance =
     balance.allowance ??
     (balance.allowances && Object.values(balance.allowances).find((value) => value !== undefined && value !== null)) ??
@@ -93,12 +137,20 @@ async function main() {
       allowance: collateralUnits(rawAllowance),
       rawBalance: balance.balance ?? null,
       rawAllowance,
+      refreshed,
+      refreshError,
+      signerAddress: account.address,
+      funderAddress,
+      signatureType,
+      apiCredsSource,
       checkedAt: new Date().toISOString(),
     }),
   );
 }
 
-main().catch((err) => {
-  process.stderr.write(`${err.stack || err.message || String(err)}\n`);
-  process.exit(1);
-});
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    process.stderr.write(`${err.stack || err.message || String(err)}\n`);
+    process.exit(1);
+  });
+}

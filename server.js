@@ -159,6 +159,12 @@ function createAccountBalance(source) {
     source,
     checkedAt: null,
     error: null,
+    signerAddress: null,
+    funderAddress: null,
+    signatureType: null,
+    apiCredsSource: null,
+    refreshed: null,
+    refreshError: null,
   };
 }
 
@@ -306,8 +312,19 @@ function mergeStringFields(target, source, keys) {
 function mergeAccountBalance(saved, source) {
   const snapshot = createAccountBalance(source);
   if (!isPlainObject(saved)) return snapshot;
-  mergeNumberFields(snapshot, saved, ["availableCash", "allowance"]);
-  mergeStringFields(snapshot, saved, ["rawBalance", "rawAllowance", "source", "checkedAt", "error"]);
+  mergeNumberFields(snapshot, saved, ["availableCash", "allowance", "signatureType"]);
+  mergeStringFields(snapshot, saved, [
+    "rawBalance",
+    "rawAllowance",
+    "source",
+    "checkedAt",
+    "error",
+    "signerAddress",
+    "funderAddress",
+    "apiCredsSource",
+    "refreshError",
+  ]);
+  if (typeof saved.refreshed === "boolean") snapshot.refreshed = saved.refreshed;
   return snapshot;
 }
 
@@ -2244,6 +2261,12 @@ function fetchPolymarketBalanceSnapshot() {
           rawBalance: payload.rawBalance === undefined || payload.rawBalance === null ? null : String(payload.rawBalance),
           allowance: dollars(payload.allowance, null),
           rawAllowance: payload.rawAllowance === undefined || payload.rawAllowance === null ? null : String(payload.rawAllowance),
+          signerAddress: payload.signerAddress || null,
+          funderAddress: payload.funderAddress || null,
+          signatureType: dollars(payload.signatureType, null),
+          apiCredsSource: payload.apiCredsSource || null,
+          refreshed: payload.refreshed === true,
+          refreshError: payload.refreshError || null,
           checkedAt: payload.checkedAt || new Date().toISOString(),
         });
       } catch (err) {
