@@ -16,7 +16,6 @@ const startCompareButton = document.querySelector("#startCompareButton");
 const stopCompareButton = document.querySelector("#stopCompareButton");
 const stopPolymarketButton = document.querySelector("#stopPolymarketButton");
 const armPolymarketLiveButton = document.querySelector("#armPolymarketLiveButton");
-const paperPolymarketButton = document.querySelector("#paperPolymarketButton");
 const startPolyCompareButton = document.querySelector("#startPolyCompareButton");
 const stopPolyCompareButton = document.querySelector("#stopPolyCompareButton");
 const returnValue = document.querySelector("#returnValue");
@@ -66,9 +65,28 @@ const ALL_COMPARE_STRATEGIES = ["v1", "v2", "v3"];
 const DEFAULT_COMPARE_STRATEGIES = ["v1", "v3"];
 const DEFAULT_PRIMARY_STRATEGY = "v1";
 let tradingRefreshTimer = null;
+const dirtyForms = new WeakSet();
 
 function apiPath(path) {
   return `${API_BASE_URL}${path}`;
+}
+
+function markFormDirty(form) {
+  if (form) dirtyForms.add(form);
+}
+
+function clearFormDirty(form) {
+  if (form) dirtyForms.delete(form);
+}
+
+function isFormDirty(form) {
+  return form ? dirtyForms.has(form) : false;
+}
+
+function trackFormDirty(form) {
+  if (!form) return;
+  form.addEventListener("input", () => markFormDirty(form));
+  form.addEventListener("change", () => markFormDirty(form));
 }
 
 function money(value) {
@@ -176,14 +194,6 @@ function compareStrategiesFromForm() {
   );
 }
 
-function polymarketStrategiesFromForm() {
-  const primary = normalizePrimaryStrategy(polymarketForm.elements.primaryStrategy?.value);
-  return normalizeCompareStrategies(
-    [...polymarketForm.querySelectorAll('input[name="compareStrategies"]:checked')].map((input) => input.value),
-    primary,
-  );
-}
-
 function strategiesFromForm(form) {
   const primary = normalizePrimaryStrategy(form.elements.primaryStrategy?.value);
   return normalizeCompareStrategies(
@@ -194,11 +204,12 @@ function strategiesFromForm(form) {
 
 function polymarketFormData(form = polymarketForm, modeOverride = null) {
   const data = Object.fromEntries(new FormData(form).entries());
+  const primaryStrategy = normalizePrimaryStrategy(data.primaryStrategy);
   return {
     mode: modeOverride || data.mode || "paper",
     profile: data.profile || "conservative",
-    primaryStrategy: normalizePrimaryStrategy(data.primaryStrategy),
-    compareStrategies: strategiesFromForm(form),
+    primaryStrategy,
+    compareStrategies: form === polymarketForm ? [primaryStrategy] : strategiesFromForm(form),
   };
 }
 
@@ -581,6 +592,8 @@ function renderPolymarketStatus(polymarket) {
   const state = polymarket || {};
   const active = state.workerStatus === "active";
   const liveArmed = state.mode === "live" && state.liveArmed === true;
+  const paperCompareActive = active && !liveArmed;
+  const liveTradingActive = active && liveArmed;
   const primaryStrategy = normalizePrimaryStrategy(state.primaryStrategy);
   const enabledStrategies = normalizeCompareStrategies(state.enabledStrategies, primaryStrategy);
   const enabledSet = new Set(enabledStrategies);
@@ -606,11 +619,13 @@ function renderPolymarketStatus(polymarket) {
   if (polymarketReturn) polymarketReturn.textContent = pct(primaryAccount.returnPct);
   if (polymarketMode) polymarketMode.textContent = `${state.mode || "paper"} / ${primaryStrategy.toUpperCase()}`;
 
-  if (armPolymarketLiveButton) armPolymarketLiveButton.disabled = liveArmed;
-  if (stopPolymarketButton) stopPolymarketButton.disabled = !active;
-  if (paperPolymarketButton) paperPolymarketButton.disabled = state.mode !== "live" && !liveArmed;
-  if (startPolyCompareButton) startPolyCompareButton.disabled = active || liveArmed;
-  if (stopPolyCompareButton) stopPolyCompareButton.disabled = !active || liveArmed;
+  if (armPolymarketLiveButton) {
+    armPolymarketLiveButton.disabled = liveTradingActive || paperCompareActive;
+    armPolymarketLiveButton.textContent = liveTradingActive ? "Polymarket live trading active" : "Start Polymarket live trading";
+  }
+  if (stopPolymarketButton) stopPolymarketButton.disabled = !liveArmed;
+  if (startPolyCompareButton) startPolyCompareButton.disabled = active;
+  if (stopPolyCompareButton) stopPolyCompareButton.disabled = !paperCompareActive;
 
   const signalStrategy = strategies[primaryStrategy]?.lastSignal
     ? primaryStrategy
@@ -712,7 +727,8 @@ function renderReport(report) {
   renderTrades(primaryReport.trades || report.trades);
 }
 
-function fillSafetyForm(state) {
+function fillSafetyForm(state, { force = false } = {}) {
+  if (!force && isFormDirty(safetyForm)) return;
   const limits = state.limits || {};
   if (safetyForm.elements.mode) safetyForm.elements.mode.value = "live";
   safetyForm.elements.killSwitch.checked = state.killSwitch !== false;
@@ -725,8 +741,9 @@ function fillSafetyForm(state) {
   safetyForm.elements.maxTradesPerDay.value = limits.maxTradesPerDay ?? 12;
 }
 
-function fillCompareForm(state) {
+function fillCompareForm(state, { force = false } = {}) {
   if (!compareForm) return;
+  if (!force && isFormDirty(compareForm)) return;
   compareForm.elements.primaryStrategy.value = normalizePrimaryStrategy(state.liveCompare?.primaryStrategy);
   const enabledStrategies = normalizeCompareStrategies(state.liveCompare?.enabledStrategies, compareForm.elements.primaryStrategy.value);
   compareForm.querySelectorAll('input[name="compareStrategies"]').forEach((input) => {
@@ -734,19 +751,23 @@ function fillCompareForm(state) {
   });
 }
 
-function fillPolymarketForm(state) {
+function fillPolymarketForm(state, { force = false, forceTrading = force, forceCompare = force } = {}) {
   const polymarket = state.polymarket || {};
   const primaryStrategy = normalizePrimaryStrategy(polymarket.primaryStrategy);
   const enabledStrategies = normalizeCompareStrategies(polymarket.enabledStrategies, primaryStrategy);
-  [polymarketForm, polyCompareForm].forEach((form) => {
-    if (!form) return;
-    if (form.elements.mode) form.elements.mode.value = form === polymarketForm ? "live" : "paper";
-    form.elements.primaryStrategy.value = primaryStrategy;
-    form.elements.profile.value = polymarket.profile || "conservative";
-    form.querySelectorAll('input[name="compareStrategies"]').forEach((input) => {
+  if (polymarketForm && (forceTrading || !isFormDirty(polymarketForm))) {
+    if (polymarketForm.elements.mode) polymarketForm.elements.mode.value = "live";
+    polymarketForm.elements.primaryStrategy.value = primaryStrategy;
+    polymarketForm.elements.profile.value = polymarket.profile || "conservative";
+  }
+  if (polyCompareForm && (forceCompare || !isFormDirty(polyCompareForm))) {
+    if (polyCompareForm.elements.mode) polyCompareForm.elements.mode.value = "paper";
+    polyCompareForm.elements.primaryStrategy.value = primaryStrategy;
+    polyCompareForm.elements.profile.value = polymarket.profile || "conservative";
+    polyCompareForm.querySelectorAll('input[name="compareStrategies"]').forEach((input) => {
       input.checked = enabledStrategies.includes(input.value);
     });
-  });
+  }
 }
 
 function renderTradingStatus(state) {
@@ -830,7 +851,8 @@ async function saveSafetySettings(event) {
 
   try {
     const payload = await persistSafetySettings();
-    fillSafetyForm(payload);
+    clearFormDirty(safetyForm);
+    fillSafetyForm(payload, { force: true });
     fillCompareForm(payload);
     fillPolymarketForm(payload);
     renderTradingStatus(payload);
@@ -850,8 +872,9 @@ async function savePolymarketSettings(event) {
 
   try {
     const payload = await persistPolymarketSettings();
+    clearFormDirty(polymarketForm);
     fillCompareForm(payload);
-    fillPolymarketForm(payload);
+    fillPolymarketForm(payload, { forceTrading: true });
     renderTradingStatus(payload);
   } catch (err) {
     polymarketNote.textContent = err.message || String(err);
@@ -914,6 +937,9 @@ async function postTradingAction(path, button, label) {
     noteTarget.textContent = err.message || String(err);
   } finally {
     button.textContent = label;
+    await loadTradingStatus().catch(() => {
+      button.disabled = false;
+    });
   }
 }
 
@@ -924,6 +950,7 @@ async function startPaperWorker() {
   startPaperButton.textContent = "Saving settings";
   try {
     await persistSafetySettings();
+    clearFormDirty(safetyForm);
     startPaperButton.textContent = "Starting Kalshi live";
     const response = await fetch(apiPath("/api/trading/start"), { method: "POST" });
     const payload = await response.json();
@@ -948,6 +975,7 @@ async function startCompareWorker() {
   startCompareButton.textContent = "Saving settings";
   try {
     await persistCompareSettings();
+    clearFormDirty(compareForm);
     startCompareButton.textContent = "Starting compare";
     const response = await fetch(apiPath("/api/trading/live-compare/start"), { method: "POST" });
     const payload = await response.json();
@@ -972,6 +1000,7 @@ async function startPolyCompareWorker() {
   startPolyCompareButton.textContent = "Saving settings";
   try {
     await persistPolymarketSettings(polyCompareForm, "paper");
+    clearFormDirty(polyCompareForm);
     startPolyCompareButton.textContent = "Starting";
     const response = await fetch(apiPath("/api/polymarket/start"), { method: "POST" });
     const payload = await response.json();
@@ -979,7 +1008,7 @@ async function startPolyCompareWorker() {
       if (payload.state) renderTradingStatus(payload.state);
       throw new Error(payload.error || "could not start Polymarket compare");
     }
-    fillPolymarketForm(payload);
+    fillPolymarketForm(payload, { forceCompare: true });
     renderTradingStatus(payload);
     started = payload.polymarket?.workerStatus === "active";
   } catch (err) {
@@ -997,13 +1026,14 @@ async function armPolymarketLive() {
   armPolymarketLiveButton.textContent = "Starting Polymarket live";
   try {
     await persistPolymarketSettings(polymarketForm, "live");
+    clearFormDirty(polymarketForm);
     const response = await fetch(apiPath("/api/polymarket/arm-live"), { method: "POST" });
     const payload = await response.json();
     if (!response.ok) {
       if (payload.state) renderTradingStatus(payload.state);
       throw new Error(payload.error || "could not arm Polymarket live mode");
     }
-    fillPolymarketForm(payload);
+    fillPolymarketForm(payload, { forceTrading: true });
     renderTradingStatus(payload);
     armed = payload.polymarket?.mode === "live" && payload.polymarket?.liveArmed === true;
   } catch (err) {
@@ -1011,12 +1041,17 @@ async function armPolymarketLive() {
   } finally {
     armPolymarketLiveButton.disabled = armed;
     armPolymarketLiveButton.textContent = "Start Polymarket live trading";
+    loadTradingStatus().catch(() => {});
   }
 }
 
 document.querySelectorAll(".tab-button").forEach((button) => {
   button.addEventListener("click", () => showPage(button.dataset.page));
 });
+trackFormDirty(safetyForm);
+trackFormDirty(compareForm);
+trackFormDirty(polymarketForm);
+trackFormDirty(polyCompareForm);
 simForm.addEventListener("submit", runSimulation);
 safetyForm.addEventListener("submit", saveSafetySettings);
 polymarketForm.addEventListener("submit", savePolymarketSettings);
@@ -1034,7 +1069,4 @@ stopPolyCompareButton.addEventListener("click", () =>
   postTradingAction("/api/polymarket/stop", stopPolyCompareButton, "Stop Polymarket compare"),
 );
 armPolymarketLiveButton.addEventListener("click", armPolymarketLive);
-paperPolymarketButton.addEventListener("click", () =>
-  postTradingAction("/api/polymarket/paper-mode", paperPolymarketButton, "Switch Polymarket to paper"),
-);
 loadTradingStatus();

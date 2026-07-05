@@ -311,10 +311,6 @@ button:focus-visible {
   margin-top: 12px;
 }
 
-.live-action-row .live-start-button {
-  grid-column: 1 / -1;
-}
-
 .panel-actions {
   padding: 16px 18px;
   margin-top: 0;

@@ -50,6 +50,8 @@ const KALSHI_LIVE_MAX_PRICE_SLIPPAGE = Math.max(0, envNumber("KALSHI_LIVE_MAX_PR
 const KALSHI_TAKER_FEE_RATE = Math.max(0, envNumber("KALSHI_TAKER_FEE_RATE", 0.07));
 const KALSHI_LIVE_CASH_BUFFER_USD = Math.max(0, envNumber("KALSHI_LIVE_CASH_BUFFER_USD", 0.25));
 const KALSHI_ORDERBOOK_DEPTH = Math.round(asNumber(process.env.KALSHI_ORDERBOOK_DEPTH, 100, 1, 100));
+const KALSHI_LIVE_TIME_IN_FORCE =
+  process.env.KALSHI_LIVE_TIME_IN_FORCE === "fill_or_kill" ? "fill_or_kill" : "immediate_or_cancel";
 const POLYMARKET_LIVE_MAX_PRICE_SLIPPAGE = Math.max(0, envNumber("POLYMARKET_LIVE_MAX_PRICE_SLIPPAGE", 0.03));
 const ACCOUNT_BALANCE_CACHE_MS = Math.max(5000, Number(process.env.ACCOUNT_BALANCE_CACHE_MS || 30000));
 const FRONTEND_ORIGINS = String(process.env.FRONTEND_ORIGIN || "")
@@ -593,8 +595,8 @@ function corsHeaders(req) {
   return headers;
 }
 
-function send(req, res, status, body, type = "application/json; charset=utf-8") {
-  res.writeHead(status, { "content-type": type, ...corsHeaders(req) });
+function send(req, res, status, body, type = "application/json; charset=utf-8", extraHeaders = {}) {
+  res.writeHead(status, { "content-type": type, ...extraHeaders, ...corsHeaders(req) });
   res.end(body);
 }
 
@@ -1030,10 +1032,11 @@ async function placeKalshiLiveOrder({ ticker, signalSide, cost, marketPrice }) {
   if (budgetCount < 1) throw new Error(`Kalshi stake is too small for one contract plus estimated fees at ${limitEconomicPrice.toFixed(4)}`);
   const orderbook = await fetchKalshiOrderbook(ticker);
   const availableContracts = kalshiRestingContractsForOrder(orderbook, order);
-  const count = Math.min(budgetCount, availableContracts);
+  const count =
+    KALSHI_LIVE_TIME_IN_FORCE === "fill_or_kill" ? Math.min(budgetCount, availableContracts) : budgetCount;
   const estimatedFee = kalshiEstimatedTakerFee(count, limitEconomicPrice);
   const estimatedTotalCost = Number((count * limitEconomicPrice + estimatedFee).toFixed(6));
-  if (count < 1) {
+  if (KALSHI_LIVE_TIME_IN_FORCE === "fill_or_kill" && count < 1) {
     throw createKalshiLiquidityError({
       ticker,
       requestedContracts: budgetCount,
@@ -1048,7 +1051,7 @@ async function placeKalshiLiveOrder({ ticker, signalSide, cost, marketPrice }) {
     side: order.side,
     count: count.toFixed(2),
     price: order.price,
-    time_in_force: "fill_or_kill",
+    time_in_force: KALSHI_LIVE_TIME_IN_FORCE,
     self_trade_prevention_type: "taker_at_cross",
     post_only: false,
     cancel_order_on_pause: true,
@@ -2746,10 +2749,14 @@ async function startPolymarketWorker() {
   return tradingState;
 }
 
-function stopPolymarketWorker(reason = "Polymarket 5m worker stopped") {
+function stopPolymarketWorker(reason = "Polymarket 5m worker stopped", options = {}) {
   if (polymarketWorker.timer) {
     clearInterval(polymarketWorker.timer);
     polymarketWorker.timer = null;
+  }
+  if (options.disarmLive === true) {
+    tradingState.polymarket.mode = "paper";
+    tradingState.polymarket.liveArmed = false;
   }
   tradingState.polymarket.workerStatus = "inactive";
   tradingState.polymarket.stoppedAt = new Date().toISOString();
@@ -3164,7 +3171,16 @@ async function handle(req, res) {
   }
 
   if (req.method === "POST" && req.url === "/api/polymarket/stop") {
-    sendJson(req, res, 200, stopPolymarketWorker("Polymarket 5m worker stopped by user"));
+    const wasLive = tradingState.polymarket.mode === "live" || tradingState.polymarket.liveArmed === true;
+    sendJson(
+      req,
+      res,
+      200,
+      stopPolymarketWorker(
+        wasLive ? "Polymarket live trading stopped by user. Polymarket returned to paper mode." : "Polymarket compare stopped by user.",
+        { disarmLive: wasLive },
+      ),
+    );
     return;
   }
 
@@ -3211,7 +3227,7 @@ async function handle(req, res) {
       sendJson(req, res, 404, { error: "not found" });
       return;
     }
-    send(req, res, 200, data, MIME[path.extname(filePath)] || "application/octet-stream");
+    send(req, res, 200, data, MIME[path.extname(filePath)] || "application/octet-stream", { "cache-control": "no-store" });
   });
 }
 

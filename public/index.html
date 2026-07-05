@@ -154,30 +154,8 @@
               </select>
             </label>
 
-            <fieldset class="strategy-toggle-group compact-toggles">
-              <legend>Enabled models</legend>
-              <label class="strategy-toggle">
-                <input name="compareStrategies" type="checkbox" value="v1" checked />
-                V1
-              </label>
-              <label class="strategy-toggle">
-                <input name="compareStrategies" type="checkbox" value="v2" />
-                V2
-              </label>
-              <label class="strategy-toggle">
-                <input name="compareStrategies" type="checkbox" value="v3" />
-                V3
-              </label>
-            </fieldset>
-
             <button id="savePolymarketButton" class="primary-button" type="submit">Save Polymarket settings only</button>
           </form>
-
-          <div class="action-row live-action-row">
-            <button id="armPolymarketLiveButton" class="secondary-button live-start-button" type="button">Start Polymarket live trading</button>
-            <button id="paperPolymarketButton" class="danger-button" type="button">Switch Polymarket to paper</button>
-            <button id="stopPolymarketButton" class="danger-button" type="button">Stop Polymarket live trading</button>
-          </div>
         </section>
 
         <section class="results" aria-label="Polymarket live trading monitor">
@@ -201,6 +179,11 @@
           </div>
 
           <div id="polymarketPanel" class="comparison-panel" hidden></div>
+
+          <div class="action-row panel-actions">
+            <button id="armPolymarketLiveButton" class="secondary-button" type="button">Start Polymarket live trading</button>
+            <button id="stopPolymarketButton" class="danger-button" type="button">Stop Polymarket live trading</button>
+          </div>
 
           <div class="table-wrap transaction-window">
             <table>
