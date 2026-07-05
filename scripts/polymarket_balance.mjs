@@ -1,11 +1,20 @@
 import process from "node:process";
 import { pathToFileURL } from "node:url";
-import { AssetType, ClobClient } from "@polymarket/clob-client-v2";
-import { createWalletClient, http } from "viem";
+import { AssetType, ClobClient, getContractConfig } from "@polymarket/clob-client-v2";
+import { createPublicClient, createWalletClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { polygon } from "viem/chains";
 
 const PUSD_DECIMALS = 1_000_000n;
+const ERC20_BALANCE_ABI = [
+  {
+    type: "function",
+    name: "balanceOf",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+];
 
 function requireEnv(name, fallback = "") {
   const value = process.env[name] || fallback;
@@ -125,6 +134,20 @@ async function scanSignatureType({ host, chainId, signer, creds, accountAddress,
   }
 }
 
+async function readCollateralBalance(publicClient, collateralAddress, walletAddress) {
+  if (!walletAddress) return null;
+  const raw = await publicClient.readContract({
+    address: collateralAddress,
+    abi: ERC20_BALANCE_ABI,
+    functionName: "balanceOf",
+    args: [walletAddress],
+  });
+  return {
+    raw: raw.toString(),
+    value: collateralUnits(raw.toString(), "micro"),
+  };
+}
+
 async function main() {
   const privateKey = normalizePrivateKey(
     requireEnv("POLYMARKET_PRIVATE_KEY", envAny(["PM_PRIVATE_KEY", "PRIVATE_KEY"])),
@@ -134,6 +157,8 @@ async function main() {
   const chainId = Number(process.env.POLYMARKET_CHAIN_ID || 137);
   const chain = chainId === polygon.id ? polygon : { ...polygon, id: chainId };
   const signer = createWalletClient({ account, chain, transport: http() });
+  const publicClient = createPublicClient({ chain, transport: http() });
+  const collateralAddress = getContractConfig(chainId).collateral;
 
   let creds = apiCredsFromEnv();
   let apiCredsSource = "env";
@@ -191,6 +216,17 @@ async function main() {
   }
 
   const snapshot = balanceSnapshot(balance);
+  let onChainFunderBalance = null;
+  let onChainSignerBalance = null;
+  let onChainError = null;
+  try {
+    onChainFunderBalance = await readCollateralBalance(publicClient, collateralAddress, funderAddress);
+    onChainSignerBalance = funderAddress.toLowerCase() === account.address.toLowerCase()
+      ? onChainFunderBalance
+      : await readCollateralBalance(publicClient, collateralAddress, account.address);
+  } catch (err) {
+    onChainError = err.message || String(err);
+  }
 
   process.stdout.write(
     JSON.stringify({
@@ -204,6 +240,10 @@ async function main() {
       signatureType,
       apiCredsSource,
       signatureTypeBalances,
+      collateralAddress,
+      onChainFunderBalance,
+      onChainSignerBalance,
+      onChainError,
       checkedAt: new Date().toISOString(),
     }),
   );

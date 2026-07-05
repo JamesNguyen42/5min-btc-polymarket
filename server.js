@@ -101,14 +101,7 @@ const tradingState = {
     minSecondsLeft: PAPER_MIN_SECONDS_LEFT,
     pollSeconds: PAPER_POLL_MS / 1000,
   },
-  limits: {
-    maxDailyLossUsd: 25,
-    maxDailyLossPct: 10,
-    maxTotalLossUsd: 50,
-    maxTotalLossPct: 20,
-    maxStakeUsd: 5,
-    maxTradesPerDay: 12,
-  },
+  limits: createDefaultLimits(),
   lastTrade: null,
   recentTrades: [],
   activePosition: null,
@@ -171,6 +164,23 @@ function createAccountBalance(source) {
     refreshed: null,
     refreshError: null,
     signatureTypeBalances: [],
+    collateralAddress: null,
+    onChainFunderBalance: null,
+    onChainFunderRawBalance: null,
+    onChainSignerBalance: null,
+    onChainSignerRawBalance: null,
+    onChainError: null,
+  };
+}
+
+function createDefaultLimits() {
+  return {
+    maxDailyLossUsd: 25,
+    maxDailyLossPct: 10,
+    maxTotalLossUsd: 50,
+    maxTotalLossPct: 20,
+    maxStakeUsd: 5,
+    maxTradesPerDay: 12,
   };
 }
 
@@ -262,8 +272,10 @@ function createPolymarketState() {
     profile: LIVE_COMPARE_PROFILE,
     mode: "paper",
     liveArmed: false,
+    killSwitch: true,
     primaryStrategy,
     enabledStrategies,
+    limits: createDefaultLimits(),
     marketSlugPrefix: POLYMARKET_BTC5M_SLUG_PREFIX,
     pollSeconds: POLYMARKET_POLL_MS / 1000,
     startedAt: null,
@@ -319,6 +331,7 @@ function mergeAccountBalance(saved, source) {
   const snapshot = createAccountBalance(source);
   if (!isPlainObject(saved)) return snapshot;
   mergeNumberFields(snapshot, saved, ["availableCash", "allowance", "signatureType"]);
+  mergeNumberFields(snapshot, saved, ["onChainFunderBalance", "onChainSignerBalance"]);
   mergeStringFields(snapshot, saved, [
     "rawBalance",
     "rawAllowance",
@@ -329,6 +342,10 @@ function mergeAccountBalance(saved, source) {
     "funderAddress",
     "apiCredsSource",
     "refreshError",
+    "collateralAddress",
+    "onChainFunderRawBalance",
+    "onChainSignerRawBalance",
+    "onChainError",
   ]);
   if (typeof saved.refreshed === "boolean") snapshot.refreshed = saved.refreshed;
   snapshot.signatureTypeBalances = Array.isArray(saved.signatureTypeBalances)
@@ -438,6 +455,7 @@ function mergePolymarketState(saved) {
   state.profile = saved.profile === "aggressive" ? "aggressive" : "conservative";
   state.liveArmed = saved.liveArmed === true && saved.mode === "live";
   state.mode = state.liveArmed ? "live" : "paper";
+  if (typeof saved.killSwitch === "boolean") state.killSwitch = saved.killSwitch;
   mergeStringFields(state, saved, [
     "marketSlugPrefix",
     "startedAt",
@@ -455,6 +473,15 @@ function mergePolymarketState(saved) {
     return selected.includes(state.primaryStrategy) ? selected : [state.primaryStrategy, ...selected];
   })();
   mergeNumberFields(state, saved, ["pollSeconds"]);
+  mergeNumberFields(state.limits, saved.limits, [
+    "maxDailyLossUsd",
+    "maxDailyLossPct",
+    "maxTotalLossUsd",
+    "maxTotalLossPct",
+    "maxStakeUsd",
+    "maxTradesPerDay",
+  ]);
+  state.limits.maxTradesPerDay = Math.max(1, Math.round(Number(state.limits.maxTradesPerDay || 1)));
   state.lastReport = cleanObjectOrNull(saved.lastReport);
   state.liveMarket = cleanObjectOrNull(saved.liveMarket);
   state.accountBalance = mergeAccountBalance(saved.accountBalance, "Polymarket collateral balance");
@@ -632,8 +659,7 @@ function normalizeDateTime(value) {
   return d.toISOString().replace(".000Z", "Z");
 }
 
-function normalizeTradingSettings(input) {
-  const current = tradingState.limits;
+function normalizeTradingSettings(input, current = tradingState.limits) {
   return {
     maxDailyLossUsd: asNumber(input.maxDailyLossUsd, current.maxDailyLossUsd, 0, 1_000_000),
     maxDailyLossPct: asNumber(input.maxDailyLossPct, current.maxDailyLossPct, 0, 100),
@@ -2066,11 +2092,11 @@ function sideToResolvedSide(side) {
   return "";
 }
 
-function liveCompareCost(strategy, signal, account) {
+function liveCompareCost(strategy, signal, account, limits = tradingState.limits) {
   const suggested = dollars(signal?.suggested_stake_usd, null);
-  const fallback = Number(tradingState.limits.maxStakeUsd || 0);
+  const fallback = Number(limits.maxStakeUsd || 0);
   const target = suggested !== null && suggested > 0 ? suggested : fallback;
-  return Math.min(target, Number(tradingState.limits.maxStakeUsd || 0), Number(account.currentEquity || 0));
+  return Math.min(target, Number(limits.maxStakeUsd || 0), Number(account.currentEquity || 0));
 }
 
 async function settleLiveComparePositions() {
@@ -2278,15 +2304,20 @@ function stopLiveCompareWorker(reason = "Selected live compare stopped") {
 }
 
 function resetPolymarketAccounts(startingCash) {
-  const primaryStrategy = normalizePrimaryStrategy(tradingState.polymarket?.primaryStrategy || DEFAULT_POLYMARKET_PRIMARY_STRATEGY);
-  const enabledStrategies = enabledPolymarketStrategies(tradingState.polymarket);
-  const mode = tradingState.polymarket?.mode === "live" ? "live" : "paper";
-  const liveArmed = mode === "live" && tradingState.polymarket?.liveArmed === true;
+  const current = tradingState.polymarket || {};
+  const primaryStrategy = normalizePrimaryStrategy(current.primaryStrategy || DEFAULT_POLYMARKET_PRIMARY_STRATEGY);
+  const enabledStrategies = enabledPolymarketStrategies(current);
+  const mode = current.mode === "live" ? "live" : "paper";
+  const liveArmed = mode === "live" && current.liveArmed === true;
   const state = createPolymarketState();
   state.primaryStrategy = primaryStrategy;
   state.enabledStrategies = enabledStrategies.includes(primaryStrategy) ? enabledStrategies : [primaryStrategy, ...enabledStrategies];
   state.mode = mode;
   state.liveArmed = liveArmed;
+  state.killSwitch = current.killSwitch !== false;
+  state.profile = current.profile === "aggressive" ? "aggressive" : "conservative";
+  state.limits = normalizeTradingSettings(current.limits || {}, current.limits || createDefaultLimits());
+  state.accountBalance = mergeAccountBalance(current.accountBalance, "Polymarket collateral balance");
   for (const strategy of COMPARE_STRATEGIES) {
     state.strategies[strategy].startingCash = startingCash;
     state.strategies[strategy].currentEquity = startingCash;
@@ -2317,7 +2348,7 @@ function addPolymarketTrade(strategy, trade) {
 function polymarketAccountFailSafeReason(strategy) {
   const account = tradingState.polymarket.strategies[strategy];
   account.entriesToday = polymarketEntriesToday(account);
-  const limits = tradingState.limits;
+  const limits = tradingState.polymarket.limits || tradingState.limits;
   const realized = Number(account.realizedPnl || 0);
   const returnPct = Number(account.returnPct || 0);
   if (limits.maxDailyLossUsd > 0 && realized <= -limits.maxDailyLossUsd) return `${strategy.toUpperCase()} daily loss $${limits.maxDailyLossUsd} reached`;
@@ -2460,6 +2491,18 @@ function fetchPolymarketBalanceSnapshot() {
           signatureTypeBalances: Array.isArray(payload.signatureTypeBalances)
             ? payload.signatureTypeBalances.filter(isPlainObject).slice(0, 4)
             : [],
+          collateralAddress: payload.collateralAddress || null,
+          onChainFunderBalance: dollars(payload.onChainFunderBalance?.value, null),
+          onChainFunderRawBalance:
+            payload.onChainFunderBalance?.raw === undefined || payload.onChainFunderBalance?.raw === null
+              ? null
+              : String(payload.onChainFunderBalance.raw),
+          onChainSignerBalance: dollars(payload.onChainSignerBalance?.value, null),
+          onChainSignerRawBalance:
+            payload.onChainSignerBalance?.raw === undefined || payload.onChainSignerBalance?.raw === null
+              ? null
+              : String(payload.onChainSignerBalance.raw),
+          onChainError: payload.onChainError || null,
           checkedAt: payload.checkedAt || new Date().toISOString(),
         });
       } catch (err) {
@@ -2582,6 +2625,11 @@ async function pollPolymarketWorker() {
   try {
     state.lastPollAt = new Date().toISOString();
     state.lastError = null;
+    const limits = state.limits || tradingState.limits;
+    if (state.mode === "live" && state.liveArmed === true && state.killSwitch) {
+      stopPolymarketWorker("Polymarket live worker stopped: kill switch on", { disarmLive: true });
+      return;
+    }
     let liveBalance = null;
     let liveBalanceError = "";
     if (state.mode === "live" && state.liveArmed === true) {
@@ -2617,11 +2665,11 @@ async function pollPolymarketWorker() {
               ),
             ),
           ),
-          stakeUsd: tradingState.limits.maxStakeUsd,
+          stakeUsd: limits.maxStakeUsd,
           minBtcMoveUsd: 70,
           entrySecondsLeft: POLYMARKET_ENTRY_SECONDS_LEFT,
           thresholdPrice: POLYMARKET_TRIGGER_PRICE,
-          maxTrades: tradingState.limits.maxTradesPerDay,
+          maxTrades: limits.maxTradesPerDay,
         }),
       ),
       { primaryStrategy, marketDetails },
@@ -2648,13 +2696,13 @@ async function pollPolymarketWorker() {
       if (!signal || signal.action !== "SIGNAL" || !signal.side || account.activePosition) continue;
 
       const price = dollars(signal.live_market_price, null) ?? dollars(signal.model_entry_price, null);
-      let cost = liveCompareCost(strategy, signal, account);
+      let cost = liveCompareCost(strategy, signal, account, limits);
       if (state.mode === "live" && state.liveArmed === true && strategy === primaryStrategy) {
         if (liveBalanceError) {
           state.note = `Polymarket live signal found, but account balance is unavailable: ${liveBalanceError}`;
           continue;
         }
-        cost = Math.min(Number(tradingState.limits.maxStakeUsd || 0), liveBalance);
+        cost = Math.min(Number(limits.maxStakeUsd || 0), liveBalance);
       }
       if (!price || price <= 0 || cost <= 0) continue;
 
@@ -2768,6 +2816,9 @@ function stopPolymarketWorker(reason = "Polymarket 5m worker stopped", options =
 async function armPolymarketLive() {
   const configError = polymarketLiveModeConfiguredError();
   if (configError) throw new Error(configError);
+  if (tradingState.polymarket.killSwitch) {
+    throw new Error("Turn the Polymarket kill switch off before starting live trading");
+  }
   tradingState.polymarket.mode = "live";
   tradingState.polymarket.liveArmed = true;
   tradingState.polymarket.note = `Polymarket live trading armed. Primary: ${normalizePrimaryStrategy(
@@ -3117,10 +3168,26 @@ async function handle(req, res) {
         : normalizePolymarketStrategies(input.compareStrategies || state.enabledStrategies);
       state.enabledStrategies = selected.includes(state.primaryStrategy) ? selected : [state.primaryStrategy, ...selected];
       state.profile = input.profile === "aggressive" ? "aggressive" : "conservative";
+      const hasSafetySettings = [
+        "killSwitch",
+        "maxDailyLossUsd",
+        "maxDailyLossPct",
+        "maxTotalLossUsd",
+        "maxTotalLossPct",
+        "maxStakeUsd",
+        "maxTradesPerDay",
+      ].some((key) => Object.prototype.hasOwnProperty.call(input, key));
+      if (hasSafetySettings) {
+        if (Object.prototype.hasOwnProperty.call(input, "killSwitch")) state.killSwitch = input.killSwitch !== false;
+        state.limits = normalizeTradingSettings(input, state.limits || createDefaultLimits());
+      }
       for (const strategy of COMPARE_STRATEGIES) {
         if (!state.enabledStrategies.includes(strategy)) {
           state.strategies[strategy].lastSignal = null;
         }
+      }
+      if (polymarketWorker.timer && state.liveArmed && state.killSwitch) {
+        stopPolymarketWorker("Polymarket live worker stopped by settings change", { disarmLive: true });
       }
       saveTradingState();
       sendJson(req, res, 200, tradingState);

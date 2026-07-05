@@ -163,6 +163,14 @@ function signatureTypeBestBalance(items) {
     .sort((a, b) => Number(b.availableCash || 0) - Number(a.availableCash || 0))[0] || null;
 }
 
+function polymarketDisplayBalance(accountBalance) {
+  const clobBalance = Number(accountBalance?.availableCash);
+  if (Number.isFinite(clobBalance) && clobBalance > 0) return clobBalance;
+  const onChainBalance = Number(accountBalance?.onChainFunderBalance);
+  if (Number.isFinite(onChainBalance) && onChainBalance > 0) return onChainBalance;
+  return accountBalance?.availableCash;
+}
+
 function numberFromForm(data, key) {
   const value = Number(data[key]);
   return Number.isFinite(value) ? value : undefined;
@@ -205,12 +213,22 @@ function strategiesFromForm(form) {
 function polymarketFormData(form = polymarketForm, modeOverride = null) {
   const data = Object.fromEntries(new FormData(form).entries());
   const primaryStrategy = normalizePrimaryStrategy(data.primaryStrategy);
-  return {
+  const payload = {
     mode: modeOverride || data.mode || "paper",
     profile: data.profile || "conservative",
     primaryStrategy,
     compareStrategies: form === polymarketForm ? [primaryStrategy] : strategiesFromForm(form),
   };
+  if (form === polymarketForm) {
+    payload.killSwitch = data.killSwitch === "on";
+    payload.maxDailyLossUsd = numberFromForm(data, "maxDailyLossUsd");
+    payload.maxDailyLossPct = numberFromForm(data, "maxDailyLossPct");
+    payload.maxTotalLossUsd = numberFromForm(data, "maxTotalLossUsd");
+    payload.maxTotalLossPct = numberFromForm(data, "maxTotalLossPct");
+    payload.maxStakeUsd = numberFromForm(data, "maxStakeUsd");
+    payload.maxTradesPerDay = numberFromForm(data, "maxTradesPerDay");
+  }
+  return payload;
 }
 
 function setStatus(el, text, state) {
@@ -611,10 +629,14 @@ function renderPolymarketStatus(polymarket) {
       : state.note || "Polymarket worker is inactive.";
   }
   if (polymarketModeBadge) {
-    setStatus(polymarketModeBadge, liveArmed ? "Live armed" : state.mode === "live" ? "Live" : "Paper", liveArmed ? "running" : "");
+    setStatus(
+      polymarketModeBadge,
+      state.killSwitch === false ? "Unprotected" : "Protected",
+      state.killSwitch === false ? "running" : "error",
+    );
   }
   if (polymarketEquityLabel) polymarketEquityLabel.textContent = "Account balance";
-  if (polymarketEquity) polymarketEquity.textContent = money(accountBalance.availableCash);
+  if (polymarketEquity) polymarketEquity.textContent = money(polymarketDisplayBalance(accountBalance));
   if (polymarketPnl) polymarketPnl.textContent = money(primaryAccount.realizedPnl);
   if (polymarketReturn) polymarketReturn.textContent = pct(primaryAccount.returnPct);
   if (polymarketMode) polymarketMode.textContent = `${state.mode || "paper"} / ${primaryStrategy.toUpperCase()}`;
@@ -631,7 +653,7 @@ function renderPolymarketStatus(polymarket) {
     ? primaryStrategy
     : [...enabledStrategies].reverse().find((strategy) => strategies[strategy]?.lastSignal) || primaryStrategy;
   const signalAccount = strategies[signalStrategy] || {};
-  const cards = ALL_COMPARE_STRATEGIES.map((strategy) => {
+  const paperCards = ALL_COMPARE_STRATEGIES.map((strategy) => {
     const account = strategies[strategy] || {};
     const enabled = enabledSet.has(strategy);
     return `
@@ -652,22 +674,23 @@ function renderPolymarketStatus(polymarket) {
       : accountBalance.error
         ? "Balance error"
         : "CLOB balance";
-  const panelHtml = `
-    ${cards}
-    <div class="comparison-item">
+  const signalCard = `
+    <div class="comparison-item diagnostic-card">
       <span>${signalStrategy.toUpperCase()} signal</span>
-      <strong>${signalAccount.lastSignal?.action || "--"}</strong>
-      <small>${signalAccount.lastSignal?.side || "--"} / ${money(signalAccount.lastSignal?.move_at_entry_usd)}</small>
-    </div>
+      <strong class="compact-value">${signalAccount.lastSignal?.action || "--"}</strong>
+      <small class="detail-value">${signalAccount.lastSignal?.side || "--"} / ${money(signalAccount.lastSignal?.move_at_entry_usd)}</small>
+    </div>`;
+  const marketCard = `
     <div class="comparison-item">
       <span>Polymarket ask</span>
       <strong>${market.upAsk === undefined && market.downAsk === undefined ? "--" : `${price(market.upAsk)} / ${price(market.downAsk)}`}</strong>
       <small>UP / DOWN</small>
-    </div>
+    </div>`;
+  const diagnosticCards = `
     <div class="comparison-item diagnostic-card">
       <span>Balance source</span>
       <strong class="compact-value">${balanceHint}</strong>
-      <small class="detail-value">raw ${accountBalance.rawBalance ?? "--"} / allowance ${accountBalance.rawAllowance ?? "--"}</small>
+      <small class="detail-value">CLOB raw ${accountBalance.rawBalance ?? "--"} / on-chain ${money(accountBalance.onChainFunderBalance)}</small>
     </div>
     <div class="comparison-item diagnostic-card">
       <span>Signer / funder</span>
@@ -680,14 +703,16 @@ function renderPolymarketStatus(polymarket) {
       <small class="detail-value">${signatureTypeScanText(accountBalance.signatureTypeBalances)}</small>
     </div>
   `;
+  const tradingPanelHtml = `${signalCard}${marketCard}${diagnosticCards}`;
+  const comparePanelHtml = `${paperCards}${signalCard}${marketCard}${diagnosticCards}`;
 
   if (polymarketPanel) {
     polymarketPanel.hidden = false;
-    polymarketPanel.innerHTML = panelHtml;
+    polymarketPanel.innerHTML = tradingPanelHtml;
   }
   if (polyComparePanel) {
     polyComparePanel.hidden = false;
-    polyComparePanel.innerHTML = panelHtml;
+    polyComparePanel.innerHTML = comparePanelHtml;
   }
   if (polyCompareStatus) {
     polyCompareStatus.textContent = state.workerStatus || "inactive";
@@ -756,9 +781,17 @@ function fillPolymarketForm(state, { force = false, forceTrading = force, forceC
   const primaryStrategy = normalizePrimaryStrategy(polymarket.primaryStrategy);
   const enabledStrategies = normalizeCompareStrategies(polymarket.enabledStrategies, primaryStrategy);
   if (polymarketForm && (forceTrading || !isFormDirty(polymarketForm))) {
+    const limits = polymarket.limits || {};
     if (polymarketForm.elements.mode) polymarketForm.elements.mode.value = "live";
     polymarketForm.elements.primaryStrategy.value = primaryStrategy;
     polymarketForm.elements.profile.value = polymarket.profile || "conservative";
+    polymarketForm.elements.killSwitch.checked = polymarket.killSwitch !== false;
+    polymarketForm.elements.maxDailyLossUsd.value = limits.maxDailyLossUsd ?? 25;
+    polymarketForm.elements.maxDailyLossPct.value = limits.maxDailyLossPct ?? 10;
+    polymarketForm.elements.maxTotalLossUsd.value = limits.maxTotalLossUsd ?? 50;
+    polymarketForm.elements.maxTotalLossPct.value = limits.maxTotalLossPct ?? 20;
+    polymarketForm.elements.maxStakeUsd.value = limits.maxStakeUsd ?? 5;
+    polymarketForm.elements.maxTradesPerDay.value = limits.maxTradesPerDay ?? 12;
   }
   if (polyCompareForm && (forceCompare || !isFormDirty(polyCompareForm))) {
     if (polyCompareForm.elements.mode) polyCompareForm.elements.mode.value = "paper";

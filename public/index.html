@@ -23,8 +23,8 @@
         <section class="control-panel" aria-label="Trading fail-safe controls">
           <div class="section-title">
             <div>
-              <p class="eyebrow">Kalshi live controls</p>
-              <h2>Fail-Safes</h2>
+              <p class="eyebrow">Kalshi BTC 15-minute</p>
+              <h2>Kalshi Trading</h2>
             </div>
             <span id="killSwitchBadge" class="status error">Protected</span>
           </div>
@@ -152,6 +152,41 @@
                 <option value="conservative">Conservative</option>
                 <option value="aggressive">Aggressive</option>
               </select>
+            </label>
+
+            <label class="checkbox-label">
+              <input name="killSwitch" type="checkbox" checked />
+              Kill switch on
+            </label>
+
+            <label>
+              Max daily loss $
+              <input name="maxDailyLossUsd" type="number" min="0" step="1" value="25" inputmode="decimal" />
+            </label>
+
+            <label>
+              Max daily loss %
+              <input name="maxDailyLossPct" type="number" min="0" max="100" step="0.5" value="10" inputmode="decimal" />
+            </label>
+
+            <label>
+              Max total loss $
+              <input name="maxTotalLossUsd" type="number" min="0" step="1" value="50" inputmode="decimal" />
+            </label>
+
+            <label>
+              Max total loss %
+              <input name="maxTotalLossPct" type="number" min="0" max="100" step="0.5" value="20" inputmode="decimal" />
+            </label>
+
+            <label>
+              Max stake per trade
+              <input name="maxStakeUsd" type="number" min="0.01" step="0.01" value="5" inputmode="decimal" />
+            </label>
+
+            <label>
+              Max trades per day
+              <input name="maxTradesPerDay" type="number" min="1" step="1" value="12" inputmode="numeric" />
             </label>
 
             <button id="savePolymarketButton" class="primary-button" type="submit">Save Polymarket settings only</button>

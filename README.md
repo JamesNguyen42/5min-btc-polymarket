@@ -68,8 +68,9 @@ and live ask price, but it does not show PnL because the market has not settled.
 The dashboard now separates execution from testing:
 
 - **Trading** is for real trading controls. Kalshi BTC 15-minute and Polymarket
-  BTC 5-minute can be activated independently. Both default to **V1** and use
-  the shared fail-safes. Keep the kill switch on until you are ready.
+  BTC 5-minute can be activated independently. Both default to **V1** and each
+  has its own kill switch, loss limits, stake cap, and daily trade cap. Keep the
+  relevant kill switch on until you are ready.
 - **Compare** is for testing models with historical replays, live snapshots,
   Kalshi live-data compare, and Polymarket live-data paper compare. V2, V3, and
   Polymarket can be tested there before selecting them on Trading.
@@ -85,8 +86,8 @@ Gamma, reads side-specific UP/DOWN prices from the CLOB order book, and records
 paper entries/settlements against live Polymarket data. If you later click
 **Arm Polymarket live** on Trading, only the selected primary model may post real
 Polymarket orders; enabled secondary models remain virtual comparison accounts.
-Live mode requires `POLYMARKET_PRIVATE_KEY` and the official
-`@polymarket/clob-client-v2` SDK.
+Polymarket account balance reads and live mode require `POLYMARKET_PRIVATE_KEY`
+and the official `@polymarket/clob-client-v2` SDK.
 For the usual new API deposit-wallet flow, set `POLYMARKET_SIGNATURE_TYPE=3`
 and `POLYMARKET_FUNDER_ADDRESS` to your Polymarket deposit wallet. Use
 signature type `0` only if you intentionally trade from a standalone EOA wallet.
@@ -95,6 +96,9 @@ The app also accepts `PM_PRIVATE_KEY`, `PM_API`, `PM_API_SECRET_KEY`,
 for hosts that already use those names. `PM_API` plus `PM_API_SECRET_KEY` alone
 is not enough for authenticated balance reads or live orders; the CLOB SDK also
 needs the signer private key and API passphrase.
+The dashboard shows the CLOB spendable collateral balance first, then falls back
+to the on-chain pUSD balance for the configured funder wallet. A large allowance
+does not mean spendable cash; it is only token approval.
 
 Worker status, paper balances, open virtual positions, and recent trade history
 are persisted to `runtime/trading_state.json` by default. On Render, the
