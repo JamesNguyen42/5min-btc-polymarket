@@ -445,6 +445,18 @@ button:focus-visible {
   text-overflow: ellipsis;
 }
 
+#polymarketMode.algorithm-prediction {
+  font-size: clamp(18px, 1.6vw, 23px);
+  line-height: 1.12;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+#polymarketMode.waiting-prediction {
+  color: var(--muted);
+}
+
 .comparison-panel {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr));

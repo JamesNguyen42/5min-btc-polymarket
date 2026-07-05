@@ -54,6 +54,7 @@ const polymarketEquityLabel = document.querySelector("#polymarketEquityLabel");
 const polymarketEquity = document.querySelector("#polymarketEquity");
 const polymarketPnl = document.querySelector("#polymarketPnl");
 const polymarketReturn = document.querySelector("#polymarketReturn");
+const polymarketPredictionLabel = document.querySelector("#polymarketPredictionLabel");
 const polymarketMode = document.querySelector("#polymarketMode");
 const polymarketLiveOddsPanel = document.querySelector("#polymarketLiveOddsPanel");
 const polymarketPanel = document.querySelector("#polymarketPanel");
@@ -66,6 +67,8 @@ const API_BASE_URL = String(window.SIM_CONFIG?.apiBaseUrl || "").replace(/\/$/, 
 const ALL_COMPARE_STRATEGIES = ["v1", "v2", "v3"];
 const DEFAULT_COMPARE_STRATEGIES = ["v1", "v3"];
 const DEFAULT_PRIMARY_STRATEGY = "v1";
+const POLYMARKET_PREDICTION_START_SECONDS = 120;
+const POLYMARKET_PREDICTION_END_SECONDS = 60;
 let tradingRefreshTimer = null;
 const dirtyForms = new WeakSet();
 
@@ -139,6 +142,79 @@ function impliedOdds(upAsk, downAsk) {
     return { up: 100 - downPct, down: downPct };
   }
   return { up: null, down: null };
+}
+
+function clamp(value, min, max) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return min;
+  return Math.min(max, Math.max(min, numeric));
+}
+
+function normalizedSignalSide(value) {
+  const side = String(value || "").toUpperCase();
+  if (side === "YES" || side === "UP") return "UP";
+  if (side === "NO" || side === "DOWN") return "DOWN";
+  return "";
+}
+
+function algorithmPredictionText({ signal, market, workerActive }) {
+  if (!workerActive) {
+    return {
+      text: "Inactive",
+      title: "Start the Polymarket worker to show algorithm odds.",
+      active: false,
+    };
+  }
+
+  const secondsLeft = Number(signal?.seconds_left ?? market?.secondsLeft);
+  const hasSecondsLeft = Number.isFinite(secondsLeft);
+  const inDisplayWindow =
+    hasSecondsLeft &&
+    secondsLeft <= POLYMARKET_PREDICTION_START_SECONDS &&
+    secondsLeft >= POLYMARKET_PREDICTION_END_SECONDS;
+
+  if (!inDisplayWindow) {
+    const windowText = `${POLYMARKET_PREDICTION_START_SECONDS}s-${POLYMARKET_PREDICTION_END_SECONDS}s`;
+    const text = !hasSecondsLeft
+      ? "Waiting for window"
+      : secondsLeft > POLYMARKET_PREDICTION_START_SECONDS
+        ? `Waiting ${secondsText(secondsLeft)}`
+        : `Window closed ${secondsText(secondsLeft)}`;
+    return {
+      text,
+      title: `Algorithm odds show only from ${windowText} left.`,
+      active: false,
+    };
+  }
+
+  const action = String(signal?.action || "").toUpperCase();
+  const signalSide = normalizedSignalSide(signal?.side);
+  let direction = signalSide;
+  let edge = 0;
+
+  if (action === "SIGNAL" && direction) {
+    const confidence = Number(signal?.confidence);
+    const confidenceScore = clamp((confidence - 1) / 3.1, 0, 1);
+    edge = 5 + confidenceScore * 30;
+  } else {
+    const move = Number(signal?.move_at_entry_usd);
+    const threshold = Math.max(1, Number(signal?.dynamic_min_btc_move_usd || 70));
+    if (Number.isFinite(move) && move !== 0) {
+      direction = move > 0 ? "UP" : "DOWN";
+      edge = clamp(Math.abs(move) / threshold, 0, 1) * 8;
+    }
+  }
+
+  const leadPct = direction ? clamp(50 + edge, 50, 85) : 50;
+  const upPct = direction === "DOWN" ? 100 - leadPct : leadPct;
+  const downPct = 100 - upPct;
+  const status = action || "NO_DATA";
+
+  return {
+    text: `UP ${probability(upPct)} / DOWN ${probability(downPct)}`,
+    title: `${status}${direction ? ` ${direction}` : ""}; ${secondsText(secondsLeft)} left.`,
+    active: true,
+  };
 }
 
 function oddsCardHtml({ label, market, upAsk, downAsk, upLabel = "UP", downLabel = "DOWN" }) {
@@ -766,7 +842,17 @@ function renderPolymarketStatus(polymarket) {
   if (polymarketEquity) polymarketEquity.textContent = money(polymarketDisplayBalance(accountBalance));
   if (polymarketPnl) polymarketPnl.textContent = money(primaryAccount.realizedPnl);
   if (polymarketReturn) polymarketReturn.textContent = pct(primaryAccount.returnPct);
-  if (polymarketMode) polymarketMode.textContent = `${state.mode || "paper"} / ${primaryStrategy.toUpperCase()}`;
+  if (polymarketPredictionLabel) polymarketPredictionLabel.textContent = `${primaryStrategy.toUpperCase()} algorithm odds`;
+  if (polymarketMode) {
+    const prediction = algorithmPredictionText({
+      signal: primaryAccount.lastSignal,
+      market: state.liveMarket,
+      workerActive: active,
+    });
+    polymarketMode.textContent = prediction.text;
+    polymarketMode.title = prediction.title;
+    polymarketMode.className = prediction.active ? "algorithm-prediction" : "algorithm-prediction waiting-prediction";
+  }
   renderPolymarketLiveOdds(state);
 
   if (armPolymarketLiveButton) {
