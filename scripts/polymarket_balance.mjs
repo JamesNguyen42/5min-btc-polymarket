@@ -1,19 +1,8 @@
 import process from "node:process";
-import { ClobClient, OrderType, Side } from "@polymarket/clob-client-v2";
+import { AssetType, ClobClient } from "@polymarket/clob-client-v2";
 import { createWalletClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { polygon } from "viem/chains";
-
-function readStdin() {
-  return new Promise((resolve, reject) => {
-    let body = "";
-    process.stdin.on("data", (chunk) => {
-      body += chunk.toString();
-    });
-    process.stdin.on("end", () => resolve(body));
-    process.stdin.on("error", reject);
-  });
-}
 
 function requireEnv(name, fallback = "") {
   const value = process.env[name] || fallback;
@@ -39,8 +28,25 @@ function normalizePrivateKey(value) {
   return value.startsWith("0x") ? value : `0x${value}`;
 }
 
+function collateralUnits(raw) {
+  if (raw === null || raw === undefined || raw === "") return null;
+  const text = String(raw);
+  if (text.includes(".") || text.toLowerCase().includes("e")) {
+    const parsed = Number(text);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  try {
+    const units = BigInt(text);
+    const whole = units / 1_000_000n;
+    const fraction = units % 1_000_000n;
+    return Number(`${whole}.${fraction.toString().padStart(6, "0")}`);
+  } catch {
+    const parsed = Number(text);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+}
+
 async function main() {
-  const input = JSON.parse(await readStdin());
   const privateKey = normalizePrivateKey(
     requireEnv("POLYMARKET_PRIVATE_KEY", envAny(["PM_PRIVATE_KEY", "PRIVATE_KEY"])),
   );
@@ -64,6 +70,7 @@ async function main() {
   if (!funderAddress) {
     throw new Error("POLYMARKET_FUNDER_ADDRESS is required unless POLYMARKET_SIGNATURE_TYPE=0");
   }
+
   const client = new ClobClient({
     host,
     chain: chainId,
@@ -72,38 +79,21 @@ async function main() {
     signatureType,
     funderAddress,
   });
-  const side = String(input.side || "BUY").toUpperCase() === "SELL" ? Side.SELL : Side.BUY;
-  const tickSize = String(input.tickSize || "0.01");
-  const amount = Number(input.amount);
-  const price = Number(input.price);
-  if (!input.tokenId) throw new Error("tokenId is required");
-  if (!Number.isFinite(amount) || amount <= 0) throw new Error("amount must be positive");
-  if (!Number.isFinite(price) || price <= 0 || price >= 1) throw new Error("price must be between 0 and 1");
-
-  const order = await client.createAndPostMarketOrder(
-    {
-      tokenID: String(input.tokenId),
-      side,
-      amount,
-      price,
-    },
-    {
-      tickSize,
-      negRisk: input.negRisk === true,
-    },
-    OrderType.FOK,
-  );
+  const balance = await client.getBalanceAllowance({ asset_type: AssetType.COLLATERAL });
+  const rawAllowance =
+    balance.allowance ??
+    (balance.allowances && Object.values(balance.allowances).find((value) => value !== undefined && value !== null)) ??
+    null;
 
   process.stdout.write(
     JSON.stringify({
       ok: true,
-      order,
-      tokenId: String(input.tokenId),
-      side,
-      amount,
-      price,
-      marketSlug: input.marketSlug || null,
-      strategy: input.strategy || null,
+      balance,
+      availableCash: collateralUnits(balance.balance),
+      allowance: collateralUnits(rawAllowance),
+      rawBalance: balance.balance ?? null,
+      rawAllowance,
+      checkedAt: new Date().toISOString(),
     }),
   );
 }

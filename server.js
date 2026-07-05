@@ -48,6 +48,7 @@ const POLYMARKET_GAMMA_BASE_URL = (process.env.POLYMARKET_GAMMA_BASE_URL || "htt
 const POLYMARKET_CLOB_BASE_URL = (process.env.POLYMARKET_CLOB_BASE_URL || "https://clob.polymarket.com").replace(/\/$/, "");
 const KALSHI_LIVE_MAX_PRICE_SLIPPAGE = Math.max(0, envNumber("KALSHI_LIVE_MAX_PRICE_SLIPPAGE", 0.03));
 const POLYMARKET_LIVE_MAX_PRICE_SLIPPAGE = Math.max(0, envNumber("POLYMARKET_LIVE_MAX_PRICE_SLIPPAGE", 0.03));
+const ACCOUNT_BALANCE_CACHE_MS = Math.max(5000, Number(process.env.ACCOUNT_BALANCE_CACHE_MS || 30000));
 const FRONTEND_ORIGINS = String(process.env.FRONTEND_ORIGIN || "")
   .split(",")
   .map((origin) => origin.trim())
@@ -65,11 +66,22 @@ const polymarketBtc5mMarketCache = {
 };
 const polymarketMarketBySlugCache = new Map();
 const polymarketBookByTokenCache = new Map();
+const kalshiAccountBalanceCache = {
+  expiresAt: 0,
+  promise: null,
+  value: null,
+};
+const polymarketAccountBalanceCache = {
+  expiresAt: 0,
+  promise: null,
+  value: null,
+};
 const tradingState = {
   mode: "paper",
   workerStatus: "inactive",
   killSwitch: true,
   updatedAt: new Date().toISOString(),
+  accountBalance: createAccountBalance("Kalshi portfolio balance"),
   balances: {
     startingCash: 0,
     currentEquity: 0,
@@ -135,6 +147,18 @@ function createCompareAccount(strategy) {
     lastSignal: null,
     lastTrade: null,
     recentTrades: [],
+  };
+}
+
+function createAccountBalance(source) {
+  return {
+    availableCash: null,
+    rawBalance: null,
+    allowance: null,
+    rawAllowance: null,
+    source,
+    checkedAt: null,
+    error: null,
   };
 }
 
@@ -236,6 +260,7 @@ function createPolymarketState() {
     lastError: null,
     lastReport: null,
     liveMarket: null,
+    accountBalance: createAccountBalance("Polymarket collateral balance"),
     note: `${compareStrategyLabel(enabledStrategies)} Polymarket 5m worker is inactive. Paper mode uses live Polymarket data.`,
     strategies: {
       v1: createCompareAccount("v1"),
@@ -276,6 +301,14 @@ function mergeStringFields(target, source, keys) {
   for (const key of keys) {
     if (typeof source[key] === "string") target[key] = source[key];
   }
+}
+
+function mergeAccountBalance(saved, source) {
+  const snapshot = createAccountBalance(source);
+  if (!isPlainObject(saved)) return snapshot;
+  mergeNumberFields(snapshot, saved, ["availableCash", "allowance"]);
+  mergeStringFields(snapshot, saved, ["rawBalance", "rawAllowance", "source", "checkedAt", "error"]);
+  return snapshot;
 }
 
 function compareEntriesToday(account) {
@@ -398,6 +431,7 @@ function mergePolymarketState(saved) {
   mergeNumberFields(state, saved, ["pollSeconds"]);
   state.lastReport = cleanObjectOrNull(saved.lastReport);
   state.liveMarket = cleanObjectOrNull(saved.liveMarket);
+  state.accountBalance = mergeAccountBalance(saved.accountBalance, "Polymarket collateral balance");
   state.recentTrades = cleanTradeList(saved.recentTrades, 100);
 
   const savedStrategies = isPlainObject(saved.strategies) ? saved.strategies : {};
@@ -428,6 +462,7 @@ function mergeTradingState(saved) {
     "realizedPnl",
     "returnPct",
   ]);
+  tradingState.accountBalance = mergeAccountBalance(saved.accountBalance, "Kalshi portfolio balance");
   mergeNumberFields(tradingState.limits, saved.limits, [
     "maxDailyLossUsd",
     "maxDailyLossPct",
@@ -872,26 +907,78 @@ async function placeKalshiLiveOrder({ ticker, signalSide, cost, marketPrice }) {
 
 async function currentKalshiBalanceDollars() {
   try {
-    const data = await kalshiRequest("GET", "/portfolio/balance");
-    const nestedDollars = dollars(data?.balance?.balance_dollars, null);
-    if (nestedDollars !== null) return nestedDollars;
-    const rootDollars = dollars(data?.balance_dollars, null);
-    if (rootDollars !== null) return rootDollars;
-    const nestedCents = dollars(data?.balance?.balance, null);
-    if (nestedCents !== null) return nestedCents / 100;
-    const rootCents = dollars(data?.balance, null);
-    return rootCents !== null ? rootCents / 100 : null;
+    const snapshot = await fetchKalshiBalanceSnapshot();
+    return snapshot.availableCash;
   } catch {
     return null;
   }
 }
 
+function kalshiBalanceDollars(data) {
+  const nestedDollars = dollars(data?.balance?.balance_dollars, null);
+  if (nestedDollars !== null) return nestedDollars;
+  const rootDollars = dollars(data?.balance_dollars, null);
+  if (rootDollars !== null) return rootDollars;
+  const nestedCents = dollars(data?.balance?.balance, null);
+  if (nestedCents !== null) return nestedCents / 100;
+  const rootCents = dollars(data?.balance, null);
+  return rootCents !== null ? rootCents / 100 : null;
+}
+
+async function fetchKalshiBalanceSnapshot() {
+  const data = await kalshiRequest("GET", "/portfolio/balance");
+  const availableCash = kalshiBalanceDollars(data);
+  return {
+    ...createAccountBalance("Kalshi portfolio balance"),
+    availableCash: availableCash === null ? null : Number(availableCash.toFixed(6)),
+    rawBalance: JSON.stringify(data?.balance ?? data ?? null),
+    checkedAt: new Date().toISOString(),
+  };
+}
+
+async function syncKalshiAccountBalance({ force = false } = {}) {
+  if (!kalshiLiveCredentialsConfigured()) {
+    const snapshot = {
+      ...createAccountBalance("Kalshi portfolio balance"),
+      checkedAt: new Date().toISOString(),
+      error: "Kalshi credentials are not configured in .env",
+    };
+    tradingState.accountBalance = snapshot;
+    return snapshot;
+  }
+  const now = Date.now();
+  if (!force && kalshiAccountBalanceCache.value && kalshiAccountBalanceCache.expiresAt > now) {
+    tradingState.accountBalance = kalshiAccountBalanceCache.value;
+    return kalshiAccountBalanceCache.value;
+  }
+  if (kalshiAccountBalanceCache.promise) return kalshiAccountBalanceCache.promise;
+  kalshiAccountBalanceCache.promise = fetchKalshiBalanceSnapshot()
+    .then((snapshot) => {
+      kalshiAccountBalanceCache.value = snapshot;
+      kalshiAccountBalanceCache.expiresAt = Date.now() + ACCOUNT_BALANCE_CACHE_MS;
+      tradingState.accountBalance = snapshot;
+      return snapshot;
+    })
+    .catch((err) => {
+      const snapshot = {
+        ...createAccountBalance("Kalshi portfolio balance"),
+        checkedAt: new Date().toISOString(),
+        error: err.message || String(err),
+      };
+      tradingState.accountBalance = snapshot;
+      return snapshot;
+    })
+    .finally(() => {
+      kalshiAccountBalanceCache.promise = null;
+    });
+  return kalshiAccountBalanceCache.promise;
+}
+
 async function resolvePaperStartingCash() {
-  const balance = await currentKalshiBalanceDollars();
-  const startingCash = balance !== null ? balance : PAPER_STARTING_CASH;
+  const startingCash = PAPER_STARTING_CASH;
   return {
     startingCash: Number(startingCash.toFixed(6)),
-    source: balance !== null ? "Kalshi balance" : "PAPER_STARTING_CASH fallback",
+    source: "PAPER_STARTING_CASH",
   };
 }
 
@@ -1486,6 +1573,14 @@ async function pollPaperWorker() {
     if (tradingState.mode === "live") {
       const configError = kalshiLiveModeConfiguredError();
       if (configError) throw new Error(configError);
+      const balanceSnapshot = await syncKalshiAccountBalance({ force: true });
+      const liveEquity = Number(balanceSnapshot.availableCash);
+      if (!Number.isFinite(liveEquity) || liveEquity <= 0) {
+        tradingState.note = `Kalshi live worker could not read account balance: ${
+          balanceSnapshot.error || "no available balance"
+        }`;
+        return;
+      }
 
       const primaryStrategy = normalizePrimaryStrategy(tradingState.strategy.primaryStrategy);
       const marketDetails = await fetchCurrentBtc15mMarketDetails();
@@ -1496,7 +1591,7 @@ async function pollPaperWorker() {
             strategyMode: primaryStrategy,
             profile: LIVE_COMPARE_PROFILE,
             intervalMinutes: 15,
-            startingCash: Math.max(1, Number(tradingState.balances.currentEquity || PAPER_STARTING_CASH)),
+            startingCash: Math.max(1, liveEquity),
             stakeUsd: tradingState.limits.maxStakeUsd,
             minBtcMoveUsd: 70,
             entrySecondsLeft: PAPER_ENTRY_SECONDS_LEFT,
@@ -1529,7 +1624,7 @@ async function pollPaperWorker() {
       }
 
       const price = dollars(signal.live_market_price, null) ?? dollars(signal.model_entry_price, null);
-      const cost = Math.min(Number(tradingState.limits.maxStakeUsd || 0), Number(tradingState.balances.currentEquity || 0));
+      const cost = Math.min(Number(tradingState.limits.maxStakeUsd || 0), liveEquity);
       if (!price || price <= 0 || cost <= 0) {
         tradingState.note = "Kalshi live signal found, but no usable price or equity is available.";
         return;
@@ -1671,7 +1766,11 @@ async function startPaperWorker() {
   }
   if (paperWorker.timer) return tradingState;
 
-  await syncPaperStartingCash();
+  if (mode === "live") {
+    await syncKalshiAccountBalance({ force: true });
+  } else {
+    await syncPaperStartingCash();
+  }
 
   tradingState.workerStatus = "active";
   tradingState.startedAt = new Date().toISOString();
@@ -2069,26 +2168,129 @@ async function settlePolymarketPositions() {
 }
 
 function polymarketLiveCredentialsConfigured() {
-  return Boolean(process.env.POLYMARKET_PRIVATE_KEY || process.env.PRIVATE_KEY);
+  return Boolean(polymarketEnv(["POLYMARKET_PRIVATE_KEY", "PM_PRIVATE_KEY", "PRIVATE_KEY"]));
+}
+
+function polymarketEnv(names, fallback = "") {
+  for (const name of names) {
+    if (process.env[name]) return process.env[name];
+  }
+  return fallback;
+}
+
+function polymarketApiCredsConfigured() {
+  return Boolean(
+    polymarketEnv(["POLYMARKET_API_KEY", "PM_API"]) &&
+      polymarketEnv(["POLYMARKET_API_SECRET", "PM_API_SECRET_KEY"]) &&
+      polymarketEnv(["POLYMARKET_API_PASSPHRASE", "PM_API_PASSPHRASE", "PM_API_PASS_PHRASE"]),
+  );
 }
 
 function polymarketSignatureType() {
-  const value = Number(process.env.POLYMARKET_SIGNATURE_TYPE || 3);
+  const value = Number(polymarketEnv(["POLYMARKET_SIGNATURE_TYPE", "PM_SIGNATURE_TYPE"], "3"));
   return Number.isFinite(value) ? value : 3;
 }
 
 function polymarketLiveModeConfiguredError() {
   if (!polymarketLiveCredentialsConfigured()) {
-    return "POLYMARKET_PRIVATE_KEY is not configured in .env";
+    return "POLYMARKET_PRIVATE_KEY or PM_PRIVATE_KEY is not configured in .env";
   }
   const signatureType = polymarketSignatureType();
   if (![0, 1, 2, 3].includes(signatureType)) {
-    return "POLYMARKET_SIGNATURE_TYPE must be 0, 1, 2, or 3";
+    return "POLYMARKET_SIGNATURE_TYPE or PM_SIGNATURE_TYPE must be 0, 1, 2, or 3";
   }
-  if (signatureType !== 0 && !process.env.POLYMARKET_FUNDER_ADDRESS) {
-    return "POLYMARKET_FUNDER_ADDRESS is required for Polymarket signature types 1, 2, and 3";
+  if (signatureType !== 0 && !polymarketEnv(["POLYMARKET_FUNDER_ADDRESS", "PM_FUNDER_ADDRESS"])) {
+    return "POLYMARKET_FUNDER_ADDRESS or PM_FUNDER_ADDRESS is required for Polymarket signature types 1, 2, and 3";
   }
   return "";
+}
+
+function fetchPolymarketBalanceSnapshot() {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [path.join("scripts", "polymarket_balance.mjs")], {
+      cwd: ROOT,
+      windowsHide: true,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    const timeout = setTimeout(() => {
+      child.kill();
+      reject(new Error("Polymarket balance helper timed out"));
+    }, 45_000);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", (err) => {
+      clearTimeout(timeout);
+      reject(err);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timeout);
+      if (code !== 0) {
+        reject(new Error((stderr || stdout || `Polymarket balance helper exited with code ${code}`).trim()));
+        return;
+      }
+      try {
+        const payload = JSON.parse(stdout);
+        resolve({
+          ...createAccountBalance("Polymarket collateral balance"),
+          availableCash: dollars(payload.availableCash, null),
+          rawBalance: payload.rawBalance === undefined || payload.rawBalance === null ? null : String(payload.rawBalance),
+          allowance: dollars(payload.allowance, null),
+          rawAllowance: payload.rawAllowance === undefined || payload.rawAllowance === null ? null : String(payload.rawAllowance),
+          checkedAt: payload.checkedAt || new Date().toISOString(),
+        });
+      } catch (err) {
+        reject(new Error(`could not parse Polymarket balance helper JSON: ${err.message}`));
+      }
+    });
+  });
+}
+
+async function syncPolymarketAccountBalance({ force = false } = {}) {
+  const state = tradingState.polymarket;
+  const configError = polymarketLiveModeConfiguredError();
+  if (configError) {
+    const snapshot = {
+      ...createAccountBalance("Polymarket collateral balance"),
+      checkedAt: new Date().toISOString(),
+      error: configError,
+    };
+    state.accountBalance = snapshot;
+    return snapshot;
+  }
+  const now = Date.now();
+  if (!force && polymarketAccountBalanceCache.value && polymarketAccountBalanceCache.expiresAt > now) {
+    state.accountBalance = polymarketAccountBalanceCache.value;
+    return polymarketAccountBalanceCache.value;
+  }
+  if (polymarketAccountBalanceCache.promise) return polymarketAccountBalanceCache.promise;
+  polymarketAccountBalanceCache.promise = fetchPolymarketBalanceSnapshot()
+    .then((snapshot) => {
+      polymarketAccountBalanceCache.value = snapshot;
+      polymarketAccountBalanceCache.expiresAt = Date.now() + ACCOUNT_BALANCE_CACHE_MS;
+      state.accountBalance = snapshot;
+      return snapshot;
+    })
+    .catch((err) => {
+      const snapshot = {
+        ...createAccountBalance("Polymarket collateral balance"),
+        checkedAt: new Date().toISOString(),
+        error: err.message || String(err),
+      };
+      state.accountBalance = snapshot;
+      return snapshot;
+    })
+    .finally(() => {
+      polymarketAccountBalanceCache.promise = null;
+    });
+  return polymarketAccountBalanceCache.promise;
 }
 
 function placePolymarketLiveOrder(input) {
@@ -2164,6 +2366,15 @@ async function pollPolymarketWorker() {
   try {
     state.lastPollAt = new Date().toISOString();
     state.lastError = null;
+    let liveBalance = null;
+    let liveBalanceError = "";
+    if (state.mode === "live" && state.liveArmed === true) {
+      const balanceSnapshot = await syncPolymarketAccountBalance({ force: true });
+      liveBalance = Number(balanceSnapshot.availableCash);
+      if (!Number.isFinite(liveBalance) || liveBalance <= 0) {
+        liveBalanceError = balanceSnapshot.error || "no available Polymarket balance";
+      }
+    }
 
     await settlePolymarketPositions();
     for (const strategy of activeStrategies) {
@@ -2221,7 +2432,14 @@ async function pollPolymarketWorker() {
       if (!signal || signal.action !== "SIGNAL" || !signal.side || account.activePosition) continue;
 
       const price = dollars(signal.live_market_price, null) ?? dollars(signal.model_entry_price, null);
-      const cost = liveCompareCost(strategy, signal, account);
+      let cost = liveCompareCost(strategy, signal, account);
+      if (state.mode === "live" && state.liveArmed === true && strategy === primaryStrategy) {
+        if (liveBalanceError) {
+          state.note = `Polymarket live signal found, but account balance is unavailable: ${liveBalanceError}`;
+          continue;
+        }
+        cost = Math.min(Number(tradingState.limits.maxStakeUsd || 0), liveBalance);
+      }
       if (!price || price <= 0 || cost <= 0) continue;
 
       const alreadyTradedMarket = account.recentTrades.some(
@@ -2568,13 +2786,18 @@ async function handle(req, res) {
     if (tradingState.mode === "paper" && tradingState.workerStatus !== "active") {
       await syncPaperStartingCash();
     }
+    await syncKalshiAccountBalance();
+    await syncPolymarketAccountBalance();
     sendJson(req, res, 200, tradingState);
     return;
   }
 
   if (req.method === "GET" && req.url === "/api/polymarket/status") {
+    await syncPolymarketAccountBalance();
     sendJson(req, res, 200, {
       configured: polymarketLiveCredentialsConfigured(),
+      apiCredsConfigured: polymarketApiCredsConfigured(),
+      configError: polymarketLiveModeConfiguredError(),
       gammaBaseUrl: POLYMARKET_GAMMA_BASE_URL,
       clobBaseUrl: POLYMARKET_CLOB_BASE_URL,
       slugPrefix: POLYMARKET_BTC5M_SLUG_PREFIX,

@@ -38,6 +38,7 @@ const tradeHead5 = document.querySelector("#tradeHead5");
 const comparisonPanel = document.querySelector("#comparisonPanel");
 const workerStatus = document.querySelector("#workerStatus");
 const tradingNote = document.querySelector("#tradingNote");
+const kalshiEquityLabel = document.querySelector("#kalshiEquityLabel");
 const currentEquity = document.querySelector("#currentEquity");
 const realizedPnl = document.querySelector("#realizedPnl");
 const liveReturn = document.querySelector("#liveReturn");
@@ -49,6 +50,7 @@ const liveComparePanel = document.querySelector("#liveComparePanel");
 const compareTradeRows = document.querySelector("#compareTradeRows");
 const polymarketStatus = document.querySelector("#polymarketStatus");
 const polymarketNote = document.querySelector("#polymarketNote");
+const polymarketEquityLabel = document.querySelector("#polymarketEquityLabel");
 const polymarketEquity = document.querySelector("#polymarketEquity");
 const polymarketPnl = document.querySelector("#polymarketPnl");
 const polymarketReturn = document.querySelector("#polymarketReturn");
@@ -507,18 +509,22 @@ function renderPolymarketStatus(polymarket) {
   const enabledSet = new Set(enabledStrategies);
   const strategies = state.strategies || {};
   const primaryAccount = strategies[primaryStrategy] || {};
+  const accountBalance = state.accountBalance || {};
 
   if (polymarketStatus) {
     polymarketStatus.textContent = state.workerStatus || "inactive";
     polymarketStatus.className = `return-value ${active ? "gain" : "neutral"}`;
   }
   if (polymarketNote) {
-    polymarketNote.textContent = state.note || "Polymarket worker is inactive.";
+    polymarketNote.textContent = accountBalance.error
+      ? `${state.note || "Polymarket worker is inactive."} Balance: ${accountBalance.error}`
+      : state.note || "Polymarket worker is inactive.";
   }
   if (polymarketModeBadge) {
     setStatus(polymarketModeBadge, liveArmed ? "Live armed" : state.mode === "live" ? "Live" : "Paper", liveArmed ? "running" : "");
   }
-  if (polymarketEquity) polymarketEquity.textContent = money(primaryAccount.currentEquity);
+  if (polymarketEquityLabel) polymarketEquityLabel.textContent = "Account balance";
+  if (polymarketEquity) polymarketEquity.textContent = money(accountBalance.availableCash);
   if (polymarketPnl) polymarketPnl.textContent = money(primaryAccount.realizedPnl);
   if (polymarketReturn) polymarketReturn.textContent = pct(primaryAccount.returnPct);
   if (polymarketMode) polymarketMode.textContent = `${state.mode || "paper"} / ${primaryStrategy.toUpperCase()}`;
@@ -627,13 +633,18 @@ function fillPolymarketForm(state) {
 
 function renderTradingStatus(state) {
   const balances = state.balances || {};
+  const accountBalance = state.accountBalance || {};
   workerStatus.textContent = state.workerStatus || "inactive";
   workerStatus.className = `return-value ${state.workerStatus === "active" ? "gain" : "neutral"}`;
   tradingMode.textContent = state.mode || "--";
-  currentEquity.textContent = money(balances.currentEquity);
+  if (kalshiEquityLabel) kalshiEquityLabel.textContent = state.mode === "live" ? "Account balance" : "Paper equity";
+  currentEquity.textContent = state.mode === "live" ? money(accountBalance.availableCash) : money(balances.currentEquity);
   realizedPnl.textContent = money(balances.realizedPnl);
   liveReturn.textContent = pct(balances.returnPct);
-  tradingNote.textContent = state.note || `Updated ${shortDate(state.updatedAt)}`;
+  tradingNote.textContent =
+    state.mode === "live" && accountBalance.error
+      ? `${state.note || `Updated ${shortDate(state.updatedAt)}`} Balance: ${accountBalance.error}`
+      : state.note || `Updated ${shortDate(state.updatedAt)}`;
   setStatus(killSwitchBadge, state.killSwitch === false ? "Unprotected" : "Protected", state.killSwitch === false ? "running" : "error");
   renderLiveCompareStatus(state.liveCompare);
   renderPolymarketStatus(state.polymarket);

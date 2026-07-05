@@ -90,6 +90,11 @@ Live mode requires `POLYMARKET_PRIVATE_KEY` and the official
 For the usual new API deposit-wallet flow, set `POLYMARKET_SIGNATURE_TYPE=3`
 and `POLYMARKET_FUNDER_ADDRESS` to your Polymarket deposit wallet. Use
 signature type `0` only if you intentionally trade from a standalone EOA wallet.
+The app also accepts `PM_PRIVATE_KEY`, `PM_API`, `PM_API_SECRET_KEY`,
+`PM_API_PASSPHRASE`, `PM_FUNDER_ADDRESS`, and `PM_SIGNATURE_TYPE` as aliases
+for hosts that already use those names. `PM_API` plus `PM_API_SECRET_KEY` alone
+is not enough for authenticated balance reads or live orders; the CLOB SDK also
+needs the signer private key and API passphrase.
 
 Worker status, paper balances, open virtual positions, and recent trade history
 are persisted to `runtime/trading_state.json` by default. On Render, the
