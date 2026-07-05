@@ -76,9 +76,13 @@ The dashboard now separates execution from testing:
   Polymarket can be tested there before selecting them on Trading.
 
 Kalshi live trading uses the selected Trading model, the current Kalshi market
-snapshot, and a fill-or-kill V2 order capped by `KALSHI_LIVE_MAX_PRICE_SLIPPAGE`.
-Kalshi market data and orders use the configured `KALSHI_ENV`; set
-`KALSHI_ENV=prod` when you want the worker pointed at production Kalshi.
+snapshot, and V2 IOC orders capped by `KALSHI_LIVE_MAX_PRICE_SLIPPAGE`.
+It skips asks at or above `KALSHI_LIVE_MAX_TAKE_PRICE` and retries later in the
+same market instead of burning the market on a liquidity miss. Fill-or-kill is
+only used when `KALSHI_LIVE_TIME_IN_FORCE=fill_or_kill` and
+`KALSHI_LIVE_ALLOW_FILL_OR_KILL=1` are both set. Kalshi market data and orders
+use the configured `KALSHI_ENV`; set `KALSHI_ENV=prod` when you want the worker
+pointed at production Kalshi.
 
 Polymarket compare defaults to **paper mode**, **V1 primary**, and V1-only
 comparison. It finds the current `btc-updown-5m-<unix bucket>` market through

@@ -47,11 +47,14 @@ const POLYMARKET_BTC5M_SLUG_PREFIX = process.env.POLYMARKET_BTC5M_SLUG_PREFIX ||
 const POLYMARKET_GAMMA_BASE_URL = (process.env.POLYMARKET_GAMMA_BASE_URL || "https://gamma-api.polymarket.com").replace(/\/$/, "");
 const POLYMARKET_CLOB_BASE_URL = (process.env.POLYMARKET_CLOB_BASE_URL || "https://clob.polymarket.com").replace(/\/$/, "");
 const KALSHI_LIVE_MAX_PRICE_SLIPPAGE = Math.max(0, envNumber("KALSHI_LIVE_MAX_PRICE_SLIPPAGE", 0.03));
+const KALSHI_LIVE_MAX_TAKE_PRICE = asNumber(process.env.KALSHI_LIVE_MAX_TAKE_PRICE, 0.99, 0.01, 1);
 const KALSHI_TAKER_FEE_RATE = Math.max(0, envNumber("KALSHI_TAKER_FEE_RATE", 0.07));
 const KALSHI_LIVE_CASH_BUFFER_USD = Math.max(0, envNumber("KALSHI_LIVE_CASH_BUFFER_USD", 0.25));
 const KALSHI_ORDERBOOK_DEPTH = Math.round(asNumber(process.env.KALSHI_ORDERBOOK_DEPTH, 100, 1, 100));
 const KALSHI_LIVE_TIME_IN_FORCE =
-  process.env.KALSHI_LIVE_TIME_IN_FORCE === "fill_or_kill" ? "fill_or_kill" : "immediate_or_cancel";
+  process.env.KALSHI_LIVE_TIME_IN_FORCE === "fill_or_kill" && process.env.KALSHI_LIVE_ALLOW_FILL_OR_KILL === "1"
+    ? "fill_or_kill"
+    : "immediate_or_cancel";
 const POLYMARKET_LIVE_MAX_PRICE_SLIPPAGE = Math.max(0, envNumber("POLYMARKET_LIVE_MAX_PRICE_SLIPPAGE", 0.03));
 const ACCOUNT_BALANCE_CACHE_MS = Math.max(5000, Number(process.env.ACCOUNT_BALANCE_CACHE_MS || 30000));
 const FRONTEND_ORIGINS = String(process.env.FRONTEND_ORIGIN || "")
@@ -1049,15 +1052,37 @@ function createKalshiLiquidityError({ ticker, requestedContracts, availableContr
   return err;
 }
 
+function kalshiLivePriceSkipReason({ ticker, signalSide, price }) {
+  const value = Number(price);
+  const side = String(signalSide || "--").toUpperCase();
+  const market = ticker ? ` on ${ticker}` : "";
+  if (!Number.isFinite(value) || value <= 0) return `Kalshi live skipped${market}: no usable ${side} ask is available.`;
+  if (value >= KALSHI_LIVE_MAX_TAKE_PRICE) {
+    return `Kalshi live skipped${market}: ${side} ask ${value.toFixed(4)} is at or above max take ${KALSHI_LIVE_MAX_TAKE_PRICE.toFixed(
+      4,
+    )}.`;
+  }
+  return "";
+}
+
 function isKalshiLiquidityError(err) {
   const apiCode = err?.body?.error?.code || err?.api_error?.error?.code;
-  return err?.code === "kalshi_insufficient_resting_volume" || apiCode === "fill_or_kill_insufficient_resting_volume";
+  return (
+    err?.code === "kalshi_insufficient_resting_volume" ||
+    err?.code === "kalshi_unusable_live_price" ||
+    apiCode === "fill_or_kill_insufficient_resting_volume"
+  );
 }
 
 async function placeKalshiLiveOrder({ ticker, signalSide, cost, marketPrice }) {
   const price = kalshiPriceDollars(marketPrice, null);
   if (!ticker) throw new Error("Kalshi market ticker is required");
-  if (!Number.isFinite(price) || price <= 0 || price >= 1) throw new Error("Kalshi live price must be between 0 and 1");
+  const skipReason = kalshiLivePriceSkipReason({ ticker, signalSide, price });
+  if (skipReason) {
+    const err = new Error(skipReason);
+    err.code = "kalshi_unusable_live_price";
+    throw err;
+  }
   const order = kalshiOrderSideAndPrice(signalSide, price);
   const limitEconomicPrice = kalshiLimitEconomicPrice(order);
   if (limitEconomicPrice === null) throw new Error("Kalshi live limit price must be between 0 and 1");
@@ -1828,15 +1853,20 @@ async function pollPaperWorker() {
       const marketId = snapshot.ticker;
       const alreadyTradedMarket = tradingState.recentTrades.some(
         (trade) =>
-          ["kalshi_live_entry", "kalshi_live_order_no_fill", "kalshi_live_order_no_liquidity", "kalshi_live_order_error"].includes(trade.kind) &&
+          ["paper_entry", "kalshi_live_entry"].includes(trade.kind) &&
           trade.market === marketId,
       );
       if (alreadyTradedMarket) {
-        tradingState.note = `Kalshi live already attempted ${marketId} for this market.`;
+        tradingState.note = `Kalshi live already has an entry for ${marketId}.`;
         return;
       }
 
-      const price = kalshiPriceDollars(signal.live_market_price, null) ?? kalshiPriceDollars(signal.model_entry_price, null);
+      const price = kalshiPriceDollars(signal.live_market_price, null);
+      const priceSkipReason = kalshiLivePriceSkipReason({ ticker: marketId, signalSide: signal.side, price });
+      if (priceSkipReason) {
+        tradingState.note = priceSkipReason;
+        return;
+      }
       const cost = kalshiLiveOrderBudget(signal, liveEquity);
       if (!price || price <= 0 || cost <= 0) {
         tradingState.note = "Kalshi live signal found, but no usable price or fee-adjusted equity is available.";
@@ -2220,7 +2250,12 @@ async function pollLiveCompareWorker() {
       const signal = strategyReport?.signal || null;
       if (!signal || signal.action !== "SIGNAL" || !signal.side || account.activePosition) continue;
 
-      const price = kalshiPriceDollars(signal.live_market_price, null) ?? kalshiPriceDollars(signal.model_entry_price, null);
+      const price = kalshiPriceDollars(signal.live_market_price, null);
+      const priceSkipReason = kalshiLivePriceSkipReason({ ticker: marketId, signalSide: signal.side, price });
+      if (priceSkipReason) {
+        compare.note = priceSkipReason;
+        continue;
+      }
       const cost = liveCompareCost(strategy, signal, account);
       if (!price || price <= 0 || cost <= 0) continue;
 
