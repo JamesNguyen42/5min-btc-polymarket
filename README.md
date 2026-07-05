@@ -71,6 +71,12 @@ paper entries/settlements side by side. It does not post real orders. Kalshi
 market data uses the configured `KALSHI_ENV`; set `KALSHI_ENV=prod` when you
 want the worker pointed at production Kalshi data.
 
+Worker status, paper balances, open virtual positions, and recent trade history
+are persisted to `runtime/trading_state.json` by default. On Render, the
+Blueprint mounts a persistent disk and writes this file to
+`/var/data/trading_state.json`, so a deploy restart can reload the previous
+state and resume any worker that was active before the restart.
+
 ## Repository Structure
 - `SKILL.md` — skill definition and operating rules
 - `config/` — profiles and risk parameters
@@ -82,7 +88,7 @@ want the worker pointed at production Kalshi data.
 - Node.js
 - Python 3
 - Network access for Coinbase BTC-USD candle data
-- Kalshi credentials only when a future live worker is connected
+- Kalshi credentials if you want authenticated balance lookup for paper mode
 
 ### Quick Start
 ```bash
@@ -121,10 +127,10 @@ Dashboard pages:
 - Simulation can still run 5-minute windows for comparison.
 - Trading: monitor worker status and save fail-safe limits for live/paper mode.
 
-The Trading page currently stores backend fail-safe settings and shows the worker
-as inactive until a live trading worker is connected. The kill switch defaults to
-on. Supported fail-safes include max daily loss, max total loss, max stake per
-trade, and max trades per day.
+The Trading page stores backend fail-safe settings, paper balances, open virtual
+positions, and recent worker trades. The kill switch defaults to on. Supported
+fail-safes include max daily loss, max total loss, max stake per trade, and max
+trades per day.
 
 Paper worker behavior:
 
@@ -134,6 +140,8 @@ Paper worker behavior:
 - Stops automatically if any fail-safe is hit.
 - Uses the authenticated Kalshi balance as the starting paper equity when
   available.
+- Restarts automatically after a server restart if it was active, mode is still
+  `Paper`, and the kill switch is still off.
 
 ## Kalshi API Keys
 Kalshi authenticated requests use:
@@ -176,6 +184,7 @@ On Render, set these as environment variables on the backend service:
 KALSHI_ENV=demo
 KALSHI_API_KEY_ID=<your key id>
 KALSHI_PRIVATE_KEY=<your private key PEM>
+TRADING_STATE_FILE=/var/data/trading_state.json
 ```
 
 Switch `KALSHI_ENV=prod` only after paper mode and fail-safes are working.
@@ -252,6 +261,10 @@ Render should use:
 - Health check path: `/health`
 - Service type: Web Service
 - Plan: paid/always-on recommended for backend availability
+- Persistent disk: `/var/data` for saved worker state and trade history
+
+Render persistent disks keep runtime files across deploys, but they also make
+the service single-instance and disable zero-downtime deploys.
 
 Set this Render environment variable after the Vercel site exists:
 

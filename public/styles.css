@@ -118,8 +118,15 @@ select {
 }
 
 .headline {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
   padding: 22px 22px 16px;
   border-bottom: 1px solid var(--line);
+}
+
+.headline > div:first-child {
+  min-width: 0;
 }
 
 .eyebrow {
@@ -243,6 +250,8 @@ button:focus-visible {
   align-items: center;
   justify-content: center;
   gap: 9px;
+  padding: 10px 14px;
+  text-align: center;
 }
 
 .primary-button:hover {
@@ -265,10 +274,15 @@ button:focus-visible {
 
 .secondary-button,
 .danger-button {
+  min-width: 0;
   min-height: 44px;
   border-radius: 6px;
   cursor: pointer;
   font-weight: 900;
+  padding: 9px 12px;
+  text-align: center;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
 .secondary-button {
@@ -292,13 +306,18 @@ button:focus-visible {
 }
 
 .return-value {
+  flex: 0 0 auto;
   min-width: 0;
   text-align: right;
-  font-size: 40px;
+  font-size: clamp(24px, 2.3vw, 34px);
   line-height: 0.95;
   font-weight: 900;
   text-transform: capitalize;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
 .return-value.gain {
@@ -317,6 +336,8 @@ button:focus-visible {
   margin: 8px 0 0;
   color: var(--muted);
   font-size: 14px;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
 .metrics {
@@ -385,9 +406,13 @@ button:focus-visible {
 .comparison-item strong {
   display: block;
   margin: 5px 0;
-  font-size: 28px;
+  font-size: clamp(22px, 2.1vw, 28px);
   line-height: 1;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
 .comparison-item strong.gain {
@@ -407,7 +432,8 @@ button:focus-visible {
 }
 
 .compare-monitor-head {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
@@ -415,8 +441,12 @@ button:focus-visible {
   border-bottom: 1px solid var(--line);
 }
 
+.compare-monitor-head > div:first-child {
+  min-width: 0;
+}
+
 .compare-monitor-head .return-value {
-  font-size: 30px;
+  font-size: clamp(22px, 2vw, 28px);
 }
 
 .table-wrap {

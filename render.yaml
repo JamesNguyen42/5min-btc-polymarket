@@ -5,9 +5,15 @@ services:
     plan: starter
     healthCheckPath: /health
     autoDeployTrigger: commit
+    disk:
+      name: trading-state
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: HOST
         value: 0.0.0.0
+      - key: TRADING_STATE_FILE
+        value: /var/data/trading_state.json
       - key: FRONTEND_ORIGIN
         sync: false
       - key: KALSHI_ENV

@@ -10,6 +10,10 @@ const PUBLIC_DIR = path.join(ROOT, "public");
 
 loadLocalEnv(path.join(ROOT, ".env"));
 
+const TRADING_STATE_VERSION = 1;
+const TRADING_STATE_FILE = path.isAbsolute(process.env.TRADING_STATE_FILE || "")
+  ? process.env.TRADING_STATE_FILE
+  : path.resolve(ROOT, process.env.TRADING_STATE_FILE || path.join("runtime", "trading_state.json"));
 const START_PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || (process.env.RENDER ? "0.0.0.0" : "127.0.0.1");
 const KALSHI_API_PREFIX = "/trade-api/v2";
@@ -59,7 +63,7 @@ const tradingState = {
   stoppedAt: null,
   lastPollAt: null,
   lastError: null,
-  note: "Kalshi live trading worker is not connected yet. These fail-safe settings are saved for the backend and ready for the worker integration.",
+  note: "Paper worker is inactive. The V1/V2/V3 live compare worker has its own status below.",
 };
 const paperWorker = {
   timer: null,
@@ -113,6 +117,152 @@ function createLiveCompareState() {
     },
     recentTrades: [],
   };
+}
+
+function isPlainObject(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function cleanTradeList(value, maxItems) {
+  return Array.isArray(value) ? value.filter(isPlainObject).slice(0, maxItems) : [];
+}
+
+function cleanObjectOrNull(value) {
+  return isPlainObject(value) ? value : null;
+}
+
+function mergeNumberFields(target, source, keys) {
+  if (!isPlainObject(source)) return;
+  for (const key of keys) {
+    const value = Number(source[key]);
+    if (Number.isFinite(value)) target[key] = value;
+  }
+}
+
+function mergeStringFields(target, source, keys) {
+  if (!isPlainObject(source)) return;
+  for (const key of keys) {
+    if (typeof source[key] === "string") target[key] = source[key];
+  }
+}
+
+function compareEntriesToday(account) {
+  const today = utcDay();
+  return cleanTradeList(account?.recentTrades, 100).filter(
+    (trade) => trade.kind === "compare_entry" && String(trade.ts || "").startsWith(today),
+  ).length;
+}
+
+function mergeCompareAccountState(strategy, saved) {
+  const account = createCompareAccount(strategy);
+  if (!isPlainObject(saved)) return account;
+
+  mergeNumberFields(account, saved, ["startingCash", "currentEquity", "realizedPnl", "returnPct"]);
+  account.activePosition = cleanObjectOrNull(saved.activePosition);
+  account.lastSignal = cleanObjectOrNull(saved.lastSignal);
+  account.lastTrade = cleanObjectOrNull(saved.lastTrade);
+  account.recentTrades = cleanTradeList(saved.recentTrades, 50);
+  account.entriesToday = compareEntriesToday(account);
+  return account;
+}
+
+function mergeLiveCompareState(saved) {
+  const state = createLiveCompareState();
+  if (!isPlainObject(saved)) return state;
+
+  state.workerStatus = saved.workerStatus === "active" ? "active" : "inactive";
+  state.profile = saved.profile === "aggressive" ? "aggressive" : "conservative";
+  mergeStringFields(state, saved, [
+    "mode",
+    "seriesTicker",
+    "startedAt",
+    "stoppedAt",
+    "lastPollAt",
+    "lastError",
+    "note",
+  ]);
+  mergeNumberFields(state, saved, ["pollSeconds"]);
+  state.lastReport = cleanObjectOrNull(saved.lastReport);
+  state.liveMarket = cleanObjectOrNull(saved.liveMarket);
+  state.recentTrades = cleanTradeList(saved.recentTrades, 100);
+
+  const savedStrategies = isPlainObject(saved.strategies) ? saved.strategies : {};
+  for (const strategy of COMPARE_STRATEGIES) {
+    state.strategies[strategy] = mergeCompareAccountState(strategy, savedStrategies[strategy]);
+  }
+  return state;
+}
+
+function mergeTradingState(saved) {
+  if (!isPlainObject(saved)) return false;
+
+  tradingState.mode = saved.mode === "live" ? "live" : "paper";
+  tradingState.workerStatus = saved.workerStatus === "active" ? "active" : "inactive";
+  if (typeof saved.killSwitch === "boolean") tradingState.killSwitch = saved.killSwitch;
+  mergeStringFields(tradingState, saved, [
+    "updatedAt",
+    "startedAt",
+    "stoppedAt",
+    "lastPollAt",
+    "lastError",
+    "note",
+  ]);
+  mergeNumberFields(tradingState.balances, saved.balances, [
+    "startingCash",
+    "currentEquity",
+    "realizedPnl",
+    "returnPct",
+  ]);
+  mergeNumberFields(tradingState.limits, saved.limits, [
+    "maxDailyLossUsd",
+    "maxDailyLossPct",
+    "maxTotalLossUsd",
+    "maxTotalLossPct",
+    "maxStakeUsd",
+    "maxTradesPerDay",
+  ]);
+  tradingState.limits.maxTradesPerDay = Math.max(1, Math.round(Number(tradingState.limits.maxTradesPerDay || 1)));
+  tradingState.lastTrade = cleanObjectOrNull(saved.lastTrade);
+  tradingState.recentTrades = cleanTradeList(saved.recentTrades, 100);
+  tradingState.activePosition = cleanObjectOrNull(saved.activePosition);
+  tradingState.liveCompare = mergeLiveCompareState(saved.liveCompare);
+  tradingState.restoredAt = new Date().toISOString();
+  updatePaperEquity();
+  return true;
+}
+
+function tradingStateSnapshot() {
+  return {
+    version: TRADING_STATE_VERSION,
+    savedAt: new Date().toISOString(),
+    state: JSON.parse(JSON.stringify(tradingState)),
+  };
+}
+
+function saveTradingState() {
+  try {
+    fs.mkdirSync(path.dirname(TRADING_STATE_FILE), { recursive: true });
+    const tempPath = `${TRADING_STATE_FILE}.${process.pid}.tmp`;
+    fs.writeFileSync(tempPath, JSON.stringify(tradingStateSnapshot(), null, 2));
+    fs.renameSync(tempPath, TRADING_STATE_FILE);
+  } catch (err) {
+    console.warn(`Could not save trading state: ${err.message || String(err)}`);
+  }
+}
+
+function loadTradingState() {
+  try {
+    if (!fs.existsSync(TRADING_STATE_FILE)) return false;
+    const raw = fs.readFileSync(TRADING_STATE_FILE, "utf8").replace(/^\uFEFF/, "");
+    const parsed = JSON.parse(raw);
+    const saved = parsed?.state || parsed?.tradingState || parsed;
+    const loaded = mergeTradingState(saved);
+    if (loaded) console.log(`Loaded trading state from ${TRADING_STATE_FILE}`);
+    return loaded;
+  } catch (err) {
+    console.warn(`Could not load trading state from ${TRADING_STATE_FILE}: ${err.message || String(err)}`);
+    return false;
+  }
 }
 
 function loadLocalEnv(filePath) {
@@ -371,6 +521,7 @@ function failSafeReason() {
 function addTrade(trade) {
   tradingState.lastTrade = trade;
   tradingState.recentTrades = [trade, ...tradingState.recentTrades].slice(0, 100);
+  saveTradingState();
 }
 
 async function currentKalshiBalanceDollars() {
@@ -602,6 +753,7 @@ async function pollPaperWorker() {
     tradingState.note = `Paper worker error: ${tradingState.lastError}`;
   } finally {
     paperWorker.polling = false;
+    saveTradingState();
   }
 }
 
@@ -623,6 +775,7 @@ async function startPaperWorker() {
   tradingState.note = `Paper worker active for ${KALSHI_BTC15M_SERIES}. No real orders will be placed.`;
   paperWorker.timer = setInterval(pollPaperWorker, PAPER_POLL_MS);
   await pollPaperWorker();
+  saveTradingState();
   return tradingState;
 }
 
@@ -634,6 +787,7 @@ function stopPaperWorker(reason = "stopped") {
   tradingState.workerStatus = "inactive";
   tradingState.stoppedAt = new Date().toISOString();
   tradingState.note = reason;
+  saveTradingState();
   return tradingState;
 }
 
@@ -663,11 +817,14 @@ function addLiveCompareTrade(strategy, trade) {
   };
   account.lastTrade = row;
   account.recentTrades = [row, ...account.recentTrades].slice(0, 50);
+  account.entriesToday = compareEntriesToday(account);
   compare.recentTrades = [row, ...compare.recentTrades].slice(0, 100);
+  saveTradingState();
 }
 
 function compareAccountFailSafeReason(strategy) {
   const account = tradingState.liveCompare.strategies[strategy];
+  account.entriesToday = compareEntriesToday(account);
   const limits = tradingState.limits;
   const realized = Number(account.realizedPnl || 0);
   const returnPct = Number(account.returnPct || 0);
@@ -830,6 +987,7 @@ async function pollLiveCompareWorker() {
     compare.note = `V1/V2/V3 live compare worker error: ${compare.lastError}`;
   } finally {
     liveCompareWorker.polling = false;
+    saveTradingState();
   }
 }
 
@@ -845,6 +1003,7 @@ async function startLiveCompareWorker() {
   tradingState.liveCompare.note = `V1/V2/V3 live compare active on ${KALSHI_BTC15M_SERIES}. This worker uses live data and virtual paper fills only.`;
   liveCompareWorker.timer = setInterval(pollLiveCompareWorker, LIVE_COMPARE_POLL_MS);
   await pollLiveCompareWorker();
+  saveTradingState();
   return tradingState;
 }
 
@@ -856,7 +1015,53 @@ function stopLiveCompareWorker(reason = "V1/V2/V3 live compare stopped") {
   tradingState.liveCompare.workerStatus = "inactive";
   tradingState.liveCompare.stoppedAt = new Date().toISOString();
   tradingState.liveCompare.note = reason;
+  saveTradingState();
   return tradingState;
+}
+
+function resumePaperWorkerAfterRestart() {
+  if (paperWorker.timer || tradingState.workerStatus !== "active") return;
+  if (tradingState.mode !== "paper") {
+    stopPaperWorker("paper worker was not resumed after restart because mode is not Paper");
+    return;
+  }
+  if (tradingState.killSwitch) {
+    stopPaperWorker("paper worker was not resumed after restart because the kill switch is on");
+    return;
+  }
+
+  tradingState.note = `Paper worker resumed after server restart for ${KALSHI_BTC15M_SERIES}. No real orders will be placed.`;
+  paperWorker.timer = setInterval(pollPaperWorker, PAPER_POLL_MS);
+  pollPaperWorker();
+  saveTradingState();
+}
+
+function resumeLiveCompareWorkerAfterRestart() {
+  const compare = tradingState.liveCompare;
+  if (liveCompareWorker.timer || compare.workerStatus !== "active") return;
+
+  for (const strategy of COMPARE_STRATEGIES) {
+    const account = compare.strategies[strategy];
+    if (!Number(account.startingCash || 0)) {
+      account.startingCash = 100;
+      account.currentEquity = 100;
+    }
+    account.entriesToday = compareEntriesToday(account);
+  }
+
+  compare.note = `V1/V2/V3 live compare resumed after server restart on ${KALSHI_BTC15M_SERIES}. This worker uses live data and virtual paper fills only.`;
+  liveCompareWorker.timer = setInterval(pollLiveCompareWorker, LIVE_COMPARE_POLL_MS);
+  pollLiveCompareWorker();
+  saveTradingState();
+}
+
+function resumeWorkersAfterRestart() {
+  resumePaperWorkerAfterRestart();
+  resumeLiveCompareWorkerAfterRestart();
+}
+
+function persistBeforeExit() {
+  saveTradingState();
 }
 
 function buildSimArgs(input) {
@@ -1038,6 +1243,7 @@ async function handle(req, res) {
       if (paperWorker.timer && (tradingState.killSwitch || tradingState.mode !== "paper")) {
         stopPaperWorker("paper worker stopped by settings change");
       }
+      saveTradingState();
       sendJson(req, res, 200, tradingState);
     } catch (err) {
       sendJson(req, res, 500, { error: err.message || String(err) });
@@ -1121,4 +1327,19 @@ function listen(port) {
   });
 }
 
+loadTradingState();
+
+let exiting = false;
+function handleShutdown(signal) {
+  if (exiting) return;
+  exiting = true;
+  persistBeforeExit();
+  process.exit(signal === "SIGINT" ? 130 : 0);
+}
+
+process.once("SIGINT", () => handleShutdown("SIGINT"));
+process.once("SIGTERM", () => handleShutdown("SIGTERM"));
+process.on("exit", persistBeforeExit);
+
 listen(START_PORT);
+setImmediate(resumeWorkersAfterRestart);

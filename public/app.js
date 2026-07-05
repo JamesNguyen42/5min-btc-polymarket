@@ -466,13 +466,7 @@ async function saveSafetySettings(event) {
   saveSafetyButton.textContent = "Saving";
 
   try {
-    const response = await fetch(apiPath("/api/trading/settings"), {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(safetyFormData()),
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || "could not save fail-safes");
+    const payload = await persistSafetySettings();
     fillSafetyForm(payload);
     renderTradingStatus(payload);
   } catch (err) {
@@ -481,6 +475,17 @@ async function saveSafetySettings(event) {
     saveSafetyButton.disabled = false;
     saveSafetyButton.textContent = "Save fail-safes";
   }
+}
+
+async function persistSafetySettings() {
+  const response = await fetch(apiPath("/api/trading/settings"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(safetyFormData()),
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || "could not save fail-safes");
+  return payload;
 }
 
 async function postTradingAction(path, button, label) {
@@ -498,12 +503,36 @@ async function postTradingAction(path, button, label) {
   }
 }
 
+async function startPaperWorker() {
+  if (!safetyForm.reportValidity()) return;
+  let started = false;
+  startPaperButton.disabled = true;
+  startPaperButton.textContent = "Saving settings";
+  try {
+    await persistSafetySettings();
+    startPaperButton.textContent = "Starting worker";
+    const response = await fetch(apiPath("/api/trading/start"), { method: "POST" });
+    const payload = await response.json();
+    if (!response.ok) {
+      if (payload.state) renderTradingStatus(payload.state);
+      throw new Error(payload.error || "could not start paper worker");
+    }
+    renderTradingStatus(payload);
+    started = payload.workerStatus === "active";
+  } catch (err) {
+    tradingNote.textContent = err.message || String(err);
+  } finally {
+    if (!started) startPaperButton.disabled = false;
+    startPaperButton.textContent = "Start paper worker";
+  }
+}
+
 document.querySelectorAll(".tab-button").forEach((button) => {
   button.addEventListener("click", () => showPage(button.dataset.page));
 });
 simForm.addEventListener("submit", runSimulation);
 safetyForm.addEventListener("submit", saveSafetySettings);
-startPaperButton.addEventListener("click", () => postTradingAction("/api/trading/start", startPaperButton, "Start paper worker"));
+startPaperButton.addEventListener("click", startPaperWorker);
 stopPaperButton.addEventListener("click", () => postTradingAction("/api/trading/stop", stopPaperButton, "Stop worker"));
 startCompareButton.addEventListener("click", () =>
   postTradingAction("/api/trading/live-compare/start", startCompareButton, "Start V1/V2/V3 live compare"),
