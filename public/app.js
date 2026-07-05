@@ -893,7 +893,7 @@ function fillSafetyForm(state, { force = false } = {}) {
   safetyForm.elements.maxTotalLossPct.value = limits.maxTotalLossPct ?? 20;
   safetyForm.elements.maxStakeUsd.value = limits.maxStakeUsd ?? 5;
   safetyForm.elements.maxTradesPerDay.value = limits.maxTradesPerDay ?? 12;
-  safetyForm.elements.entrySecondsLeft.value = state.strategy?.entrySecondsLeft ?? 120;
+  safetyForm.elements.entrySecondsLeft.value = state.strategy?.entrySecondsLeft ?? 180;
   safetyForm.elements.minSecondsLeft.value = state.strategy?.minSecondsLeft ?? 60;
 }
 
@@ -923,7 +923,7 @@ function fillPolymarketForm(state, { force = false, forceTrading = force, forceC
     polymarketForm.elements.maxTotalLossPct.value = limits.maxTotalLossPct ?? 20;
     polymarketForm.elements.maxStakeUsd.value = limits.maxStakeUsd ?? 5;
     polymarketForm.elements.maxTradesPerDay.value = limits.maxTradesPerDay ?? 12;
-    polymarketForm.elements.entrySecondsLeft.value = polymarket.entrySecondsLeft ?? 30;
+    polymarketForm.elements.entrySecondsLeft.value = polymarket.entrySecondsLeft ?? 180;
     polymarketForm.elements.minSecondsLeft.value = polymarket.minSecondsLeft ?? 10;
   }
   if (polyCompareForm && (forceCompare || !isFormDirty(polyCompareForm))) {

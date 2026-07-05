@@ -38,7 +38,7 @@ const POLYMARKET_MARKET_CACHE_MS = Math.max(1000, Number(process.env.POLYMARKET_
 const POLYMARKET_SETTLEMENT_CACHE_MS = Math.max(3000, Number(process.env.POLYMARKET_SETTLEMENT_CACHE_MS || 30000));
 const KALSHI_ENTRY_SECONDS_LEFT = Math.max(
   10,
-  Number(process.env.KALSHI_ENTRY_SECONDS_LEFT || process.env.PAPER_ENTRY_SECONDS_LEFT || 120),
+  Number(process.env.KALSHI_ENTRY_SECONDS_LEFT || process.env.PAPER_ENTRY_SECONDS_LEFT || 180),
 );
 const KALSHI_MIN_SECONDS_LEFT = Math.max(
   5,
@@ -46,7 +46,7 @@ const KALSHI_MIN_SECONDS_LEFT = Math.max(
 );
 const PAPER_TRIGGER_PRICE = Math.min(0.99, Math.max(0.01, Number(process.env.PAPER_TRIGGER_PRICE || 0.7)));
 const POLYMARKET_POLL_MS = Math.max(3000, Number(process.env.POLYMARKET_POLL_MS || PAPER_POLL_MS));
-const POLYMARKET_ENTRY_SECONDS_LEFT = Math.max(10, Number(process.env.POLYMARKET_ENTRY_SECONDS_LEFT || 30));
+const POLYMARKET_ENTRY_SECONDS_LEFT = Math.max(10, Number(process.env.POLYMARKET_ENTRY_SECONDS_LEFT || 180));
 const POLYMARKET_MIN_SECONDS_LEFT = Math.max(5, Number(process.env.POLYMARKET_MIN_SECONDS_LEFT || 10));
 const POLYMARKET_TRIGGER_PRICE = Math.min(0.99, Math.max(0.01, Number(process.env.POLYMARKET_TRIGGER_PRICE || PAPER_TRIGGER_PRICE)));
 const POLYMARKET_BTC5M_SLUG_PREFIX = process.env.POLYMARKET_BTC5M_SLUG_PREFIX || "btc-updown-5m";
@@ -488,13 +488,8 @@ function mergePolymarketState(saved) {
   mergeNumberFields(state, saved, ["pollSeconds", "entrySecondsLeft", "minSecondsLeft"]);
   state.entrySecondsLeft = Math.max(10, Math.round(Number(state.entrySecondsLeft || POLYMARKET_ENTRY_SECONDS_LEFT)));
   state.minSecondsLeft = Math.max(5, Math.round(Number(state.minSecondsLeft || POLYMARKET_MIN_SECONDS_LEFT)));
-  if (
-    Number(saved.entrySecondsLeft) === 120 &&
-    Number(saved.minSecondsLeft) === 20 &&
-    POLYMARKET_ENTRY_SECONDS_LEFT === 30 &&
-    POLYMARKET_MIN_SECONDS_LEFT === 10
-  ) {
-    state.entrySecondsLeft = POLYMARKET_ENTRY_SECONDS_LEFT;
+  if ([120, 150].includes(Number(saved.entrySecondsLeft))) {
+    state.entrySecondsLeft = Math.max(180, POLYMARKET_ENTRY_SECONDS_LEFT);
     state.minSecondsLeft = POLYMARKET_MIN_SECONDS_LEFT;
   }
   if (state.minSecondsLeft >= state.entrySecondsLeft) state.minSecondsLeft = Math.max(5, state.entrySecondsLeft - 1);
@@ -575,6 +570,9 @@ function mergeTradingState(saved) {
     KALSHI_MIN_SECONDS_LEFT > 30
   ) {
     tradingState.strategy.minSecondsLeft = KALSHI_MIN_SECONDS_LEFT;
+  }
+  if (Number(saved.strategy?.entrySecondsLeft) === 120) {
+    tradingState.strategy.entrySecondsLeft = Math.max(180, KALSHI_ENTRY_SECONDS_LEFT);
   }
   tradingState.liveCompare.enabledStrategies = ensurePrimaryStrategyEnabled(
     tradingState.liveCompare.enabledStrategies,
