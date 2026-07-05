@@ -36,6 +36,9 @@ const compareWorkerStatus = document.querySelector("#compareWorkerStatus");
 const compareWorkerNote = document.querySelector("#compareWorkerNote");
 const liveComparePanel = document.querySelector("#liveComparePanel");
 const API_BASE_URL = String(window.SIM_CONFIG?.apiBaseUrl || "").replace(/\/$/, "");
+const ALL_COMPARE_STRATEGIES = ["v1", "v2", "v3"];
+const DEFAULT_COMPARE_STRATEGIES = ["v1", "v3"];
+const DEFAULT_PRIMARY_STRATEGY = "v1";
 let tradingRefreshTimer = null;
 
 function apiPath(path) {
@@ -82,6 +85,32 @@ function numberFromForm(data, key) {
   return Number.isFinite(value) ? value : undefined;
 }
 
+function normalizePrimaryStrategy(value) {
+  const strategy = String(value || "").trim().toLowerCase();
+  return ALL_COMPARE_STRATEGIES.includes(strategy) ? strategy : DEFAULT_PRIMARY_STRATEGY;
+}
+
+function normalizeCompareStrategies(value, primaryStrategy = DEFAULT_PRIMARY_STRATEGY) {
+  const explicitList = Array.isArray(value);
+  const raw = Array.isArray(value) ? value : String(value || "").split(",");
+  const selected = [];
+  const primary = normalizePrimaryStrategy(primaryStrategy);
+  raw.forEach((item) => {
+    const strategy = String(item || "").trim().toLowerCase();
+    if (ALL_COMPARE_STRATEGIES.includes(strategy) && !selected.includes(strategy)) selected.push(strategy);
+  });
+  const normalized = selected.length ? selected : explicitList ? [] : [...DEFAULT_COMPARE_STRATEGIES];
+  return normalized.includes(primary) ? normalized : [primary, ...normalized];
+}
+
+function compareStrategiesFromForm() {
+  const primary = normalizePrimaryStrategy(safetyForm.elements.primaryStrategy?.value);
+  return normalizeCompareStrategies(
+    [...safetyForm.querySelectorAll('input[name="compareStrategies"]:checked')].map((input) => input.value),
+    primary,
+  );
+}
+
 function setStatus(el, text, state) {
   el.textContent = text;
   el.className = `status ${state || ""}`.trim();
@@ -121,6 +150,8 @@ function safetyFormData() {
   return {
     mode: data.mode,
     killSwitch: data.killSwitch === "on",
+    primaryStrategy: normalizePrimaryStrategy(data.primaryStrategy),
+    compareStrategies: compareStrategiesFromForm(),
     maxDailyLossUsd: numberFromForm(data, "maxDailyLossUsd"),
     maxDailyLossPct: numberFromForm(data, "maxDailyLossPct"),
     maxTotalLossUsd: numberFromForm(data, "maxTotalLossUsd"),
@@ -330,31 +361,32 @@ function renderLiveCompareStatus(compare) {
   if (stopCompareButton) stopCompareButton.disabled = !active;
 
   const strategies = state.strategies || {};
-  const v1 = strategies.v1 || {};
-  const v2 = strategies.v2 || {};
-  const v3 = strategies.v3 || {};
+  const primaryStrategy = normalizePrimaryStrategy(state.primaryStrategy);
+  const enabledStrategies = normalizeCompareStrategies(state.enabledStrategies, primaryStrategy);
+  const enabledSet = new Set(enabledStrategies);
+  const signalStrategy = strategies[primaryStrategy]?.lastSignal
+    ? primaryStrategy
+    : [...enabledStrategies].reverse().find((strategy) => strategies[strategy]?.lastSignal) || primaryStrategy;
+  const signalAccount = strategies[signalStrategy] || {};
   if (!liveComparePanel) return;
   liveComparePanel.hidden = false;
+  const accountCards = ALL_COMPARE_STRATEGIES.map((strategy) => {
+    const account = strategies[strategy] || {};
+    const enabled = enabledSet.has(strategy);
+    return `
+      <div class="comparison-item ${enabled ? "" : "muted-card"}">
+        <span>${strategy.toUpperCase()} paper${strategy === primaryStrategy ? " primary" : ""}</span>
+        <strong class="${enabled ? "" : "neutral"}">${enabled ? pct(account.returnPct) : "Disabled"}</strong>
+        <small>${enabled ? `${money(account.currentEquity)} / ${account.entriesToday ?? 0} entries` : "Enable in controls"}</small>
+      </div>
+    `;
+  }).join("");
   liveComparePanel.innerHTML = `
+    ${accountCards}
     <div class="comparison-item">
-      <span>V1 paper</span>
-      <strong>${pct(v1.returnPct)}</strong>
-      <small>${money(v1.currentEquity)} / ${v1.entriesToday ?? 0} entries</small>
-    </div>
-    <div class="comparison-item">
-      <span>V2 paper</span>
-      <strong>${pct(v2.returnPct)}</strong>
-      <small>${money(v2.currentEquity)} / ${v2.entriesToday ?? 0} entries</small>
-    </div>
-    <div class="comparison-item">
-      <span>V3 paper</span>
-      <strong>${pct(v3.returnPct)}</strong>
-      <small>${money(v3.currentEquity)} / ${v3.entriesToday ?? 0} entries</small>
-    </div>
-    <div class="comparison-item">
-      <span>V3 signal</span>
-      <strong>${v3.lastSignal?.action || "--"}</strong>
-      <small>${v3.lastSignal?.side || "--"} / ${money(v3.lastSignal?.move_at_entry_usd)}</small>
+      <span>${signalStrategy.toUpperCase()} signal</span>
+      <strong>${signalAccount.lastSignal?.action || "--"}</strong>
+      <small>${signalAccount.lastSignal?.side || "--"} / ${money(signalAccount.lastSignal?.move_at_entry_usd)}</small>
     </div>
   `;
 }
@@ -387,19 +419,31 @@ function fillSafetyForm(state) {
   const limits = state.limits || {};
   safetyForm.elements.mode.value = state.mode || "paper";
   safetyForm.elements.killSwitch.checked = state.killSwitch !== false;
+  safetyForm.elements.primaryStrategy.value = normalizePrimaryStrategy(
+    state.strategy?.primaryStrategy || state.liveCompare?.primaryStrategy,
+  );
   safetyForm.elements.maxDailyLossUsd.value = limits.maxDailyLossUsd ?? 25;
   safetyForm.elements.maxDailyLossPct.value = limits.maxDailyLossPct ?? 10;
   safetyForm.elements.maxTotalLossUsd.value = limits.maxTotalLossUsd ?? 50;
   safetyForm.elements.maxTotalLossPct.value = limits.maxTotalLossPct ?? 20;
   safetyForm.elements.maxStakeUsd.value = limits.maxStakeUsd ?? 5;
   safetyForm.elements.maxTradesPerDay.value = limits.maxTradesPerDay ?? 12;
+  const enabledStrategies = normalizeCompareStrategies(
+    state.liveCompare?.enabledStrategies,
+    safetyForm.elements.primaryStrategy.value,
+  );
+  safetyForm.querySelectorAll('input[name="compareStrategies"]').forEach((input) => {
+    input.checked = enabledStrategies.includes(input.value);
+  });
 }
 
 function renderTradingStatus(state) {
   const balances = state.balances || {};
   workerStatus.textContent = state.workerStatus || "inactive";
   workerStatus.className = `return-value ${state.workerStatus === "active" ? "gain" : "neutral"}`;
-  tradingMode.textContent = state.mode || "--";
+  tradingMode.textContent = `${state.mode || "--"} / ${normalizePrimaryStrategy(
+    state.strategy?.primaryStrategy || state.liveCompare?.primaryStrategy,
+  ).toUpperCase()}`;
   currentEquity.textContent = money(balances.currentEquity);
   realizedPnl.textContent = money(balances.realizedPnl);
   liveReturn.textContent = pct(balances.returnPct);
@@ -527,6 +571,30 @@ async function startPaperWorker() {
   }
 }
 
+async function startCompareWorker() {
+  if (!safetyForm.reportValidity()) return;
+  let started = false;
+  startCompareButton.disabled = true;
+  startCompareButton.textContent = "Saving settings";
+  try {
+    await persistSafetySettings();
+    startCompareButton.textContent = "Starting compare";
+    const response = await fetch(apiPath("/api/trading/live-compare/start"), { method: "POST" });
+    const payload = await response.json();
+    if (!response.ok) {
+      if (payload.state) renderTradingStatus(payload.state);
+      throw new Error(payload.error || "could not start selected compare");
+    }
+    renderTradingStatus(payload);
+    started = payload.liveCompare?.workerStatus === "active";
+  } catch (err) {
+    tradingNote.textContent = err.message || String(err);
+  } finally {
+    if (!started) startCompareButton.disabled = false;
+    startCompareButton.textContent = "Start selected compare";
+  }
+}
+
 document.querySelectorAll(".tab-button").forEach((button) => {
   button.addEventListener("click", () => showPage(button.dataset.page));
 });
@@ -534,10 +602,8 @@ simForm.addEventListener("submit", runSimulation);
 safetyForm.addEventListener("submit", saveSafetySettings);
 startPaperButton.addEventListener("click", startPaperWorker);
 stopPaperButton.addEventListener("click", () => postTradingAction("/api/trading/stop", stopPaperButton, "Stop worker"));
-startCompareButton.addEventListener("click", () =>
-  postTradingAction("/api/trading/live-compare/start", startCompareButton, "Start V1/V2/V3 live compare"),
-);
+startCompareButton.addEventListener("click", startCompareWorker);
 stopCompareButton.addEventListener("click", () =>
-  postTradingAction("/api/trading/live-compare/stop", stopCompareButton, "Stop V1/V2/V3 compare"),
+  postTradingAction("/api/trading/live-compare/stop", stopCompareButton, "Stop selected compare"),
 );
 loadTradingStatus();

@@ -65,11 +65,14 @@ open Kalshi `KXBTC15M` YES/NO ask prices when the public market API is
 available. It reports the current V1/V2/V3 action, side, BTC move, seconds left,
 and live ask price, but it does not show PnL because the market has not settled.
 
-The Trading page also has **Start V1/V2/V3 live compare**. That starts a backend
-worker that runs all three strategies against the same live feed and records virtual
-paper entries/settlements side by side. It does not post real orders. Kalshi
-market data uses the configured `KALSHI_ENV`; set `KALSHI_ENV=prod` when you
-want the worker pointed at production Kalshi data.
+The Trading page also has **Start selected compare**. The selected trading model
+defaults to **V1**, the live compare defaults to **V1 + V3**, and **V2** stays
+disabled unless you enable it on the page. Compare accounts start from `$10`
+virtual cash by default. The selected model owns the live Kalshi market lookup;
+enabled comparison models reuse that same market snapshot and shared settlement
+result instead of calling the same Kalshi market API separately. It does not post
+real orders. Kalshi market data uses the configured `KALSHI_ENV`; set
+`KALSHI_ENV=prod` when you want the worker pointed at production Kalshi data.
 
 Worker status, paper balances, open virtual positions, and recent trade history
 are persisted to `runtime/trading_state.json` by default. On Render, the

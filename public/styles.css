@@ -216,6 +216,45 @@ label {
   min-height: 18px;
 }
 
+.strategy-toggle-group {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fbfcfa;
+  min-width: 0;
+}
+
+.strategy-toggle-group legend {
+  grid-column: 1 / -1;
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.strategy-toggle {
+  min-width: 0;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--ink);
+}
+
+.strategy-toggle input {
+  width: 16px;
+  min-height: 16px;
+}
+
 input,
 select {
   width: 100%;
@@ -392,6 +431,10 @@ button:focus-visible {
 
 .comparison-item:last-child {
   border-right: 0;
+}
+
+.comparison-item.muted-card {
+  background: #f3f5f1;
 }
 
 .comparison-item span,
