@@ -863,11 +863,18 @@ function dollars(value, fallback = null) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function dollarsOrCents(dollarValue, centValue, fallback = null) {
-  const dollar = dollars(dollarValue, null);
-  if (dollar !== null) return dollar;
-  const cents = dollars(centValue, null);
-  return cents !== null ? cents / 100 : fallback;
+function kalshiPriceDollars(dollarValue, centValue = null, fallback = null) {
+  const rawDollar = dollars(dollarValue, null);
+  if (rawDollar !== null) {
+    if (rawDollar > 0 && rawDollar <= 1) return rawDollar;
+    if (rawDollar > 1 && rawDollar <= 100) return rawDollar / 100;
+  }
+  const rawCents = dollars(centValue, null);
+  if (rawCents !== null) {
+    if (rawCents > 0 && rawCents < 1) return rawCents;
+    if (rawCents >= 1 && rawCents <= 100) return rawCents / 100;
+  }
+  return fallback;
 }
 
 function utcDay(value = new Date()) {
@@ -938,7 +945,7 @@ function kalshiFillCount(order) {
 }
 
 function kalshiEconomicFillPrice(order, fallbackPrice) {
-  const yesSidePrice = dollars(order?.average_fill_price ?? order?.averageFillPrice, null);
+  const yesSidePrice = kalshiPriceDollars(order?.average_fill_price ?? order?.averageFillPrice, null);
   if (yesSidePrice === null) return fallbackPrice;
   return order?.resolvedSide === "no" ? Number((1 - yesSidePrice).toFixed(6)) : yesSidePrice;
 }
@@ -1048,7 +1055,7 @@ function isKalshiLiquidityError(err) {
 }
 
 async function placeKalshiLiveOrder({ ticker, signalSide, cost, marketPrice }) {
-  const price = Number(marketPrice);
+  const price = kalshiPriceDollars(marketPrice, null);
   if (!ticker) throw new Error("Kalshi market ticker is required");
   if (!Number.isFinite(price) || price <= 0 || price >= 1) throw new Error("Kalshi live price must be between 0 and 1");
   const order = kalshiOrderSideAndPrice(signalSide, price);
@@ -1331,12 +1338,12 @@ function kalshiMarketSnapshot(market) {
     title: market.title || market.subtitle || null,
     closeTime: market.close_time || market.expected_expiration_time || null,
     secondsLeft: Number.isFinite(closeTs) ? Math.max(0, Math.round((closeTs - Date.now()) / 1000)) : null,
-    yesAsk: dollarsOrCents(market.yes_ask_dollars, market.yes_ask, null),
-    noAsk: dollarsOrCents(market.no_ask_dollars, market.no_ask, null),
-    yesBid: dollarsOrCents(market.yes_bid_dollars, market.yes_bid, null),
-    noBid: dollarsOrCents(market.no_bid_dollars, market.no_bid, null),
-    yesLast: dollarsOrCents(market.yes_price_dollars, market.yes_price, null),
-    noLast: dollarsOrCents(market.no_price_dollars, market.no_price, null),
+    yesAsk: kalshiPriceDollars(market.yes_ask_dollars, market.yes_ask, null),
+    noAsk: kalshiPriceDollars(market.no_ask_dollars, market.no_ask, null),
+    yesBid: kalshiPriceDollars(market.yes_bid_dollars, market.yes_bid, null),
+    noBid: kalshiPriceDollars(market.no_bid_dollars, market.no_bid, null),
+    yesLast: kalshiPriceDollars(market.yes_price_dollars, market.yes_price, null),
+    noLast: kalshiPriceDollars(market.no_price_dollars, market.no_price, null),
   };
 }
 
@@ -1829,7 +1836,7 @@ async function pollPaperWorker() {
         return;
       }
 
-      const price = dollars(signal.live_market_price, null) ?? dollars(signal.model_entry_price, null);
+      const price = kalshiPriceDollars(signal.live_market_price, null) ?? kalshiPriceDollars(signal.model_entry_price, null);
       const cost = kalshiLiveOrderBudget(signal, liveEquity);
       if (!price || price <= 0 || cost <= 0) {
         tradingState.note = "Kalshi live signal found, but no usable price or fee-adjusted equity is available.";
@@ -2213,7 +2220,7 @@ async function pollLiveCompareWorker() {
       const signal = strategyReport?.signal || null;
       if (!signal || signal.action !== "SIGNAL" || !signal.side || account.activePosition) continue;
 
-      const price = dollars(signal.live_market_price, null) ?? dollars(signal.model_entry_price, null);
+      const price = kalshiPriceDollars(signal.live_market_price, null) ?? kalshiPriceDollars(signal.model_entry_price, null);
       const cost = liveCompareCost(strategy, signal, account);
       if (!price || price <= 0 || cost <= 0) continue;
 
