@@ -453,7 +453,7 @@ button:focus-visible {
   text-overflow: clip;
 }
 
-#polymarketMode.waiting-prediction {
+#polymarketMode.inactive-prediction {
   color: var(--muted);
 }
 

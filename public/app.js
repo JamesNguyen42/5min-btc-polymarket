@@ -67,8 +67,6 @@ const API_BASE_URL = String(window.SIM_CONFIG?.apiBaseUrl || "").replace(/\/$/, 
 const ALL_COMPARE_STRATEGIES = ["v1", "v2", "v3"];
 const DEFAULT_COMPARE_STRATEGIES = ["v1", "v3"];
 const DEFAULT_PRIMARY_STRATEGY = "v1";
-const POLYMARKET_PREDICTION_START_SECONDS = 120;
-const POLYMARKET_PREDICTION_END_SECONDS = 60;
 let tradingRefreshTimer = null;
 const dirtyForms = new WeakSet();
 
@@ -168,25 +166,6 @@ function algorithmPredictionText({ signal, market, workerActive }) {
 
   const secondsLeft = Number(signal?.seconds_left ?? market?.secondsLeft);
   const hasSecondsLeft = Number.isFinite(secondsLeft);
-  const inDisplayWindow =
-    hasSecondsLeft &&
-    secondsLeft <= POLYMARKET_PREDICTION_START_SECONDS &&
-    secondsLeft >= POLYMARKET_PREDICTION_END_SECONDS;
-
-  if (!inDisplayWindow) {
-    const windowText = `${POLYMARKET_PREDICTION_START_SECONDS}s-${POLYMARKET_PREDICTION_END_SECONDS}s`;
-    const text = !hasSecondsLeft
-      ? "Waiting for window"
-      : secondsLeft > POLYMARKET_PREDICTION_START_SECONDS
-        ? `Waiting ${secondsText(secondsLeft)}`
-        : `Window closed ${secondsText(secondsLeft)}`;
-    return {
-      text,
-      title: `Algorithm odds show only from ${windowText} left.`,
-      active: false,
-    };
-  }
-
   const action = String(signal?.action || "").toUpperCase();
   const signalSide = normalizedSignalSide(signal?.side);
   let direction = signalSide;
@@ -212,7 +191,7 @@ function algorithmPredictionText({ signal, market, workerActive }) {
 
   return {
     text: `UP ${probability(upPct)} / DOWN ${probability(downPct)}`,
-    title: `${status}${direction ? ` ${direction}` : ""}; ${secondsText(secondsLeft)} left.`,
+    title: `${status}${direction ? ` ${direction}` : ""}; ${hasSecondsLeft ? `${secondsText(secondsLeft)} left` : "no market timer"}.`,
     active: true,
   };
 }
@@ -851,7 +830,7 @@ function renderPolymarketStatus(polymarket) {
     });
     polymarketMode.textContent = prediction.text;
     polymarketMode.title = prediction.title;
-    polymarketMode.className = prediction.active ? "algorithm-prediction" : "algorithm-prediction waiting-prediction";
+    polymarketMode.className = prediction.active ? "algorithm-prediction" : "algorithm-prediction inactive-prediction";
   }
   renderPolymarketLiveOdds(state);
 
