@@ -62,6 +62,12 @@ open Kalshi `KXBTC15M` YES/NO ask prices when the public market API is
 available. It reports the current V1/V2 action, side, BTC move, seconds left,
 and live ask price, but it does not show PnL because the market has not settled.
 
+The Trading page also has **Start V1/V2 live compare**. That starts a backend
+worker that runs both strategies against the same live feed and records virtual
+paper entries/settlements side by side. It does not post real orders. Kalshi
+market data uses the configured `KALSHI_ENV`; set `KALSHI_ENV=prod` when you
+want the worker pointed at production Kalshi data.
+
 ## Repository Structure
 - `SKILL.md` — skill definition and operating rules
 - `config/` — profiles and risk parameters

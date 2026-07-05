@@ -225,6 +225,8 @@
           <div class="action-row">
             <button id="startPaperButton" class="secondary-button" type="button">Start paper worker</button>
             <button id="stopPaperButton" class="danger-button" type="button">Stop worker</button>
+            <button id="startCompareButton" class="secondary-button" type="button">Start V1/V2 live compare</button>
+            <button id="stopCompareButton" class="danger-button" type="button">Stop V1/V2 compare</button>
           </div>
         </section>
 
@@ -254,6 +256,17 @@
               <span>Mode</span>
               <strong id="tradingMode">--</strong>
             </div>
+          </div>
+
+          <div class="compare-monitor">
+            <div class="compare-monitor-head">
+              <div>
+                <p class="eyebrow">V1/V2 live compare</p>
+                <p id="compareWorkerNote" class="muted">Live compare worker is inactive.</p>
+              </div>
+              <div id="compareWorkerStatus" class="return-value neutral">inactive</div>
+            </div>
+            <div id="liveComparePanel" class="comparison-panel" hidden></div>
           </div>
 
           <div class="table-wrap">

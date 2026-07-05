@@ -6,6 +6,8 @@ const runButton = document.querySelector("#runButton");
 const saveSafetyButton = document.querySelector("#saveSafetyButton");
 const startPaperButton = document.querySelector("#startPaperButton");
 const stopPaperButton = document.querySelector("#stopPaperButton");
+const startCompareButton = document.querySelector("#startCompareButton");
+const stopCompareButton = document.querySelector("#stopCompareButton");
 const returnValue = document.querySelector("#returnValue");
 const rangeText = document.querySelector("#rangeText");
 const endingCash = document.querySelector("#endingCash");
@@ -30,6 +32,9 @@ const realizedPnl = document.querySelector("#realizedPnl");
 const liveReturn = document.querySelector("#liveReturn");
 const tradingMode = document.querySelector("#tradingMode");
 const liveTradeRows = document.querySelector("#liveTradeRows");
+const compareWorkerStatus = document.querySelector("#compareWorkerStatus");
+const compareWorkerNote = document.querySelector("#compareWorkerNote");
+const liveComparePanel = document.querySelector("#liveComparePanel");
 const API_BASE_URL = String(window.SIM_CONFIG?.apiBaseUrl || "").replace(/\/$/, "");
 let tradingRefreshTimer = null;
 
@@ -288,7 +293,7 @@ function renderLiveTrades(items) {
       return `
         <tr>
           <td>${shortDate(trade.ts)}</td>
-          <td>${trade.market || "--"}</td>
+          <td>${trade.strategy ? `${trade.strategy} ` : ""}${trade.market || "--"}</td>
           <td>${trade.side || "--"}</td>
           <td>${trade.status || "--"}</td>
           <td class="${resultClass}">${money(value)}</td>
@@ -296,6 +301,44 @@ function renderLiveTrades(items) {
       `;
     })
     .join("");
+}
+
+function renderLiveCompareStatus(compare) {
+  const state = compare || {};
+  const active = state.workerStatus === "active";
+  if (compareWorkerStatus) {
+    compareWorkerStatus.textContent = state.workerStatus || "inactive";
+    compareWorkerStatus.className = `return-value ${active ? "gain" : "neutral"}`;
+  }
+  if (compareWorkerNote) {
+    compareWorkerNote.textContent = state.note || "Live compare worker is inactive.";
+  }
+
+  if (startCompareButton) startCompareButton.disabled = active;
+  if (stopCompareButton) stopCompareButton.disabled = !active;
+
+  const strategies = state.strategies || {};
+  const v1 = strategies.v1 || {};
+  const v2 = strategies.v2 || {};
+  if (!liveComparePanel) return;
+  liveComparePanel.hidden = false;
+  liveComparePanel.innerHTML = `
+    <div class="comparison-item">
+      <span>V1 paper</span>
+      <strong>${pct(v1.returnPct)}</strong>
+      <small>${money(v1.currentEquity)} / ${v1.entriesToday ?? 0} entries</small>
+    </div>
+    <div class="comparison-item">
+      <span>V2 paper</span>
+      <strong>${pct(v2.returnPct)}</strong>
+      <small>${money(v2.currentEquity)} / ${v2.entriesToday ?? 0} entries</small>
+    </div>
+    <div class="comparison-item">
+      <span>Last signal</span>
+      <strong>${v2.lastSignal?.action || "--"}</strong>
+      <small>${v2.lastSignal?.side || "--"} / ${money(v2.lastSignal?.move_at_entry_usd)}</small>
+    </div>
+  `;
 }
 
 function renderReport(report) {
@@ -344,13 +387,15 @@ function renderTradingStatus(state) {
   liveReturn.textContent = pct(balances.returnPct);
   tradingNote.textContent = state.note || `Updated ${shortDate(state.updatedAt)}`;
   setStatus(killSwitchBadge, state.killSwitch === false ? "Unprotected" : "Protected", state.killSwitch === false ? "running" : "error");
-  renderLiveTrades(state.recentTrades);
+  renderLiveCompareStatus(state.liveCompare);
+  renderLiveTrades([...(state.liveCompare?.recentTrades || []), ...(state.recentTrades || [])]);
   startPaperButton.disabled = state.workerStatus === "active";
   stopPaperButton.disabled = state.workerStatus !== "active";
-  if (state.workerStatus === "active" && !tradingRefreshTimer) {
+  const compareActive = state.liveCompare?.workerStatus === "active";
+  if ((state.workerStatus === "active" || compareActive) && !tradingRefreshTimer) {
     tradingRefreshTimer = setInterval(loadTradingStatus, 5000);
   }
-  if (state.workerStatus !== "active" && tradingRefreshTimer) {
+  if (state.workerStatus !== "active" && !compareActive && tradingRefreshTimer) {
     clearInterval(tradingRefreshTimer);
     tradingRefreshTimer = null;
   }
@@ -442,4 +487,10 @@ simForm.addEventListener("submit", runSimulation);
 safetyForm.addEventListener("submit", saveSafetySettings);
 startPaperButton.addEventListener("click", () => postTradingAction("/api/trading/start", startPaperButton, "Start paper worker"));
 stopPaperButton.addEventListener("click", () => postTradingAction("/api/trading/stop", stopPaperButton, "Stop worker"));
+startCompareButton.addEventListener("click", () =>
+  postTradingAction("/api/trading/live-compare/start", startCompareButton, "Start V1/V2 live compare"),
+);
+stopCompareButton.addEventListener("click", () =>
+  postTradingAction("/api/trading/live-compare/stop", stopCompareButton, "Stop V1/V2 compare"),
+);
 loadTradingStatus();

@@ -15,6 +15,8 @@ const HOST = process.env.HOST || (process.env.RENDER ? "0.0.0.0" : "127.0.0.1");
 const KALSHI_API_PREFIX = "/trade-api/v2";
 const KALSHI_BTC15M_SERIES = process.env.KALSHI_BTC15M_SERIES || "KXBTC15M";
 const PAPER_POLL_MS = Math.max(3000, Number(process.env.PAPER_POLL_MS || 10000));
+const LIVE_COMPARE_POLL_MS = Math.max(3000, Number(process.env.LIVE_COMPARE_POLL_MS || PAPER_POLL_MS));
+const LIVE_COMPARE_PROFILE = process.env.LIVE_COMPARE_PROFILE === "aggressive" ? "aggressive" : "conservative";
 const PAPER_ENTRY_SECONDS_LEFT = Math.max(10, Number(process.env.PAPER_ENTRY_SECONDS_LEFT || 120));
 const PAPER_MIN_SECONDS_LEFT = Math.max(5, Number(process.env.PAPER_MIN_SECONDS_LEFT || 30));
 const PAPER_TRIGGER_PRICE = Math.min(0.99, Math.max(0.01, Number(process.env.PAPER_TRIGGER_PRICE || 0.7)));
@@ -51,6 +53,7 @@ const tradingState = {
   lastTrade: null,
   recentTrades: [],
   activePosition: null,
+  liveCompare: createLiveCompareState(),
   startedAt: null,
   stoppedAt: null,
   lastPollAt: null,
@@ -61,6 +64,10 @@ const paperWorker = {
   timer: null,
   polling: false,
 };
+const liveCompareWorker = {
+  timer: null,
+  polling: false,
+};
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -68,6 +75,43 @@ const MIME = {
   ".js": "application/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
 };
+
+function createCompareAccount(strategy) {
+  return {
+    strategy,
+    startingCash: 0,
+    currentEquity: 0,
+    realizedPnl: 0,
+    returnPct: 0,
+    entriesToday: 0,
+    activePosition: null,
+    lastSignal: null,
+    lastTrade: null,
+    recentTrades: [],
+  };
+}
+
+function createLiveCompareState() {
+  return {
+    workerStatus: "inactive",
+    profile: LIVE_COMPARE_PROFILE,
+    mode: "paper_live_data",
+    seriesTicker: KALSHI_BTC15M_SERIES,
+    pollSeconds: LIVE_COMPARE_POLL_MS / 1000,
+    startedAt: null,
+    stoppedAt: null,
+    lastPollAt: null,
+    lastError: null,
+    lastReport: null,
+    liveMarket: null,
+    note: "V1/V2 live compare worker is inactive. It uses live data and virtual paper fills only.",
+    strategies: {
+      v1: createCompareAccount("v1"),
+      v2: createCompareAccount("v2"),
+    },
+    recentTrades: [],
+  };
+}
 
 function loadLocalEnv(filePath) {
   if (!fs.existsSync(filePath)) return;
@@ -591,6 +635,228 @@ function stopPaperWorker(reason = "stopped") {
   return tradingState;
 }
 
+function resetLiveCompareAccounts(startingCash) {
+  const state = createLiveCompareState();
+  state.strategies.v1.startingCash = startingCash;
+  state.strategies.v1.currentEquity = startingCash;
+  state.strategies.v2.startingCash = startingCash;
+  state.strategies.v2.currentEquity = startingCash;
+  tradingState.liveCompare = state;
+}
+
+function updateCompareAccountEquity(account) {
+  const starting = Number(account.startingCash || 0);
+  const realized = Number(account.realizedPnl || 0);
+  account.currentEquity = Number((starting + realized).toFixed(6));
+  account.returnPct = starting > 0 ? Number(((realized / starting) * 100).toFixed(4)) : 0;
+}
+
+function addLiveCompareTrade(strategy, trade) {
+  const compare = tradingState.liveCompare;
+  const account = compare.strategies[strategy];
+  const row = {
+    ...trade,
+    strategy: strategy.toUpperCase(),
+    kind: trade.kind || "compare",
+  };
+  account.lastTrade = row;
+  account.recentTrades = [row, ...account.recentTrades].slice(0, 50);
+  compare.recentTrades = [row, ...compare.recentTrades].slice(0, 100);
+}
+
+function compareAccountFailSafeReason(strategy) {
+  const account = tradingState.liveCompare.strategies[strategy];
+  const limits = tradingState.limits;
+  const realized = Number(account.realizedPnl || 0);
+  const returnPct = Number(account.returnPct || 0);
+  if (limits.maxDailyLossUsd > 0 && realized <= -limits.maxDailyLossUsd) return `${strategy.toUpperCase()} daily loss $${limits.maxDailyLossUsd} reached`;
+  if (limits.maxDailyLossPct > 0 && returnPct <= -limits.maxDailyLossPct) return `${strategy.toUpperCase()} daily loss ${limits.maxDailyLossPct}% reached`;
+  if (limits.maxTotalLossUsd > 0 && realized <= -limits.maxTotalLossUsd) return `${strategy.toUpperCase()} total loss $${limits.maxTotalLossUsd} reached`;
+  if (limits.maxTotalLossPct > 0 && returnPct <= -limits.maxTotalLossPct) return `${strategy.toUpperCase()} total loss ${limits.maxTotalLossPct}% reached`;
+  if (account.entriesToday >= limits.maxTradesPerDay) return `${strategy.toUpperCase()} max trades per day ${limits.maxTradesPerDay} reached`;
+  return "";
+}
+
+function liveCompareMarketId(report) {
+  return report?.live_market?.ticker || `${report?.market_start || ""}-${report?.market_end || ""}`;
+}
+
+function sideToResolvedSide(side) {
+  const normalized = String(side || "").toUpperCase();
+  if (normalized === "UP" || normalized === "YES") return "yes";
+  if (normalized === "DOWN" || normalized === "NO") return "no";
+  return "";
+}
+
+function liveCompareCost(strategy, signal, account) {
+  const suggested = dollars(signal?.suggested_stake_usd, null);
+  const fallback = Number(tradingState.limits.maxStakeUsd || 0);
+  const target = suggested !== null && suggested > 0 ? suggested : fallback;
+  return Math.min(target, Number(tradingState.limits.maxStakeUsd || 0), Number(account.currentEquity || 0));
+}
+
+async function settleLiveComparePositions() {
+  const compare = tradingState.liveCompare;
+  for (const strategy of ["v1", "v2"]) {
+    const account = compare.strategies[strategy];
+    const position = account.activePosition;
+    if (!position || !position.marketTicker) continue;
+
+    let market = null;
+    try {
+      market = await fetchKalshiMarket(position.marketTicker);
+    } catch (err) {
+      compare.lastError = err.message || String(err);
+      continue;
+    }
+    const resolvedSide = marketResolvedSide(market);
+    if (!resolvedSide) continue;
+
+    const won = resolvedSide === position.resolvedSide;
+    const payout = won ? position.contracts : 0;
+    const pnl = Number((payout - position.cost).toFixed(6));
+    account.realizedPnl = Number((Number(account.realizedPnl || 0) + pnl).toFixed(6));
+    updateCompareAccountEquity(account);
+    account.activePosition = null;
+
+    addLiveCompareTrade(strategy, {
+      ts: new Date().toISOString(),
+      market: position.marketTicker,
+      side: position.side,
+      status: won ? "won" : "lost",
+      pnl_usd: pnl,
+      entry_price: position.price,
+      exit_value: won ? 1 : 0,
+      cost_usd: position.cost,
+      contracts: position.contracts,
+    });
+  }
+}
+
+async function pollLiveCompareWorker() {
+  if (liveCompareWorker.polling) return;
+  liveCompareWorker.polling = true;
+  const compare = tradingState.liveCompare;
+  try {
+    compare.lastPollAt = new Date().toISOString();
+    compare.lastError = null;
+
+    await settleLiveComparePositions();
+    for (const strategy of ["v1", "v2"]) {
+      const blocked = compareAccountFailSafeReason(strategy);
+      if (blocked) {
+        stopLiveCompareWorker(`fail-safe stopped V1/V2 compare worker: ${blocked}`);
+        return;
+      }
+    }
+
+    const report = await attachLiveMarketData(
+      await runSimulator(
+        buildSimArgs({
+          dataMode: "live",
+          strategyMode: "compare",
+          profile: compare.profile,
+          intervalMinutes: 15,
+          startingCash: Math.max(
+            1,
+            Math.min(
+              Number(compare.strategies.v1.currentEquity || 0) || 100,
+              Number(compare.strategies.v2.currentEquity || 0) || 100,
+            ),
+          ),
+          stakeUsd: tradingState.limits.maxStakeUsd,
+          minBtcMoveUsd: 70,
+          entrySecondsLeft: PAPER_ENTRY_SECONDS_LEFT,
+          thresholdPrice: PAPER_TRIGGER_PRICE,
+          maxTrades: tradingState.limits.maxTradesPerDay,
+        }),
+      ),
+      { intervalMinutes: 15 },
+    );
+    compare.lastReport = report;
+    compare.liveMarket = report.live_market || null;
+
+    const marketId = liveCompareMarketId(report);
+    for (const strategy of ["v1", "v2"]) {
+      const account = compare.strategies[strategy];
+      const strategyReport = report.strategies?.[strategy];
+      const signal = strategyReport?.signal || null;
+      account.lastSignal = signal;
+      if (!signal || signal.action !== "SIGNAL" || !signal.side || account.activePosition) continue;
+
+      const price = dollars(signal.live_market_price, null) ?? dollars(signal.model_entry_price, null);
+      const cost = liveCompareCost(strategy, signal, account);
+      if (!price || price <= 0 || cost <= 0) continue;
+
+      const alreadyTradedMarket = account.recentTrades.some(
+        (trade) => trade.kind === "compare_entry" && trade.market === marketId,
+      );
+      if (alreadyTradedMarket) continue;
+
+      const contracts = Number((cost / price).toFixed(6));
+      const position = {
+        marketTicker: report.live_market?.ticker || null,
+        marketId,
+        side: signal.side,
+        resolvedSide: sideToResolvedSide(signal.side),
+        price,
+        cost: Number(cost.toFixed(6)),
+        contracts,
+        enteredAt: new Date().toISOString(),
+        marketEnd: report.market_end,
+      };
+      account.activePosition = position;
+      account.entriesToday += 1;
+      addLiveCompareTrade(strategy, {
+        ts: position.enteredAt,
+        kind: "compare_entry",
+        market: marketId,
+        side: position.side,
+        status: "open",
+        pnl_usd: 0,
+        entry_price: position.price,
+        cost_usd: position.cost,
+        contracts: position.contracts,
+      });
+    }
+
+    const v1 = compare.strategies.v1.lastSignal;
+    const v2 = compare.strategies.v2.lastSignal;
+    compare.note = `V1/V2 live compare active. V1 ${v1?.action || "--"} ${v1?.side || ""}; V2 ${v2?.action || "--"} ${v2?.side || ""}. No real orders are posted.`;
+  } catch (err) {
+    compare.lastError = err.message || String(err);
+    compare.note = `V1/V2 live compare worker error: ${compare.lastError}`;
+  } finally {
+    liveCompareWorker.polling = false;
+  }
+}
+
+async function startLiveCompareWorker() {
+  if (liveCompareWorker.timer) return tradingState;
+  const balance = await currentKalshiBalanceDollars();
+  const rawStartingCash = balance ?? tradingState.balances.startingCash ?? 100;
+  const startingCash = Number((Number(rawStartingCash) || 100).toFixed(6));
+  resetLiveCompareAccounts(startingCash);
+  tradingState.liveCompare.workerStatus = "active";
+  tradingState.liveCompare.startedAt = new Date().toISOString();
+  tradingState.liveCompare.stoppedAt = null;
+  tradingState.liveCompare.note = `V1/V2 live compare active on ${KALSHI_BTC15M_SERIES}. This worker uses live data and virtual paper fills only.`;
+  liveCompareWorker.timer = setInterval(pollLiveCompareWorker, LIVE_COMPARE_POLL_MS);
+  await pollLiveCompareWorker();
+  return tradingState;
+}
+
+function stopLiveCompareWorker(reason = "V1/V2 live compare stopped") {
+  if (liveCompareWorker.timer) {
+    clearInterval(liveCompareWorker.timer);
+    liveCompareWorker.timer = null;
+  }
+  tradingState.liveCompare.workerStatus = "inactive";
+  tradingState.liveCompare.stoppedAt = new Date().toISOString();
+  tradingState.liveCompare.note = reason;
+  return tradingState;
+}
+
 function buildSimArgs(input) {
   const profile = input.profile === "aggressive" ? "aggressive" : "conservative";
   const strategyMode = input.strategyMode === "v1" || input.strategyMode === "v2" ? input.strategyMode : "compare";
@@ -773,6 +1039,21 @@ async function handle(req, res) {
 
   if (req.method === "POST" && req.url === "/api/trading/stop") {
     sendJson(req, res, 200, stopPaperWorker("paper worker stopped by user"));
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/trading/live-compare/start") {
+    try {
+      const state = await startLiveCompareWorker();
+      sendJson(req, res, 200, state);
+    } catch (err) {
+      sendJson(req, res, 400, { error: err.message || String(err), state: tradingState });
+    }
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/trading/live-compare/stop") {
+    sendJson(req, res, 200, stopLiveCompareWorker("V1/V2 live compare stopped by user"));
     return;
   }
 

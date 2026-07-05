@@ -402,6 +402,23 @@ button:focus-visible {
   color: var(--muted);
 }
 
+.compare-monitor {
+  border-bottom: 1px solid var(--line);
+}
+
+.compare-monitor-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 22px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.compare-monitor-head .return-value {
+  font-size: 30px;
+}
+
 .table-wrap {
   overflow: auto;
   max-height: 520px;
@@ -485,6 +502,10 @@ td {
 
   .comparison-item:last-child {
     border-bottom: 0;
+  }
+
+  .compare-monitor-head {
+    display: block;
   }
 }
 
