@@ -36,12 +36,18 @@ const KALSHI_MARKET_CACHE_MS = Math.max(3000, Number(process.env.KALSHI_MARKET_C
 const KALSHI_SETTLEMENT_CACHE_MS = Math.max(3000, Number(process.env.KALSHI_SETTLEMENT_CACHE_MS || 30000));
 const POLYMARKET_MARKET_CACHE_MS = Math.max(1000, Number(process.env.POLYMARKET_MARKET_CACHE_MS || 3000));
 const POLYMARKET_SETTLEMENT_CACHE_MS = Math.max(3000, Number(process.env.POLYMARKET_SETTLEMENT_CACHE_MS || 30000));
-const PAPER_ENTRY_SECONDS_LEFT = Math.max(10, Number(process.env.PAPER_ENTRY_SECONDS_LEFT || 120));
-const PAPER_MIN_SECONDS_LEFT = Math.max(5, Number(process.env.PAPER_MIN_SECONDS_LEFT || 30));
+const KALSHI_ENTRY_SECONDS_LEFT = Math.max(
+  10,
+  Number(process.env.KALSHI_ENTRY_SECONDS_LEFT || process.env.PAPER_ENTRY_SECONDS_LEFT || 120),
+);
+const KALSHI_MIN_SECONDS_LEFT = Math.max(
+  5,
+  Number(process.env.KALSHI_MIN_SECONDS_LEFT || process.env.PAPER_MIN_SECONDS_LEFT || 60),
+);
 const PAPER_TRIGGER_PRICE = Math.min(0.99, Math.max(0.01, Number(process.env.PAPER_TRIGGER_PRICE || 0.7)));
 const POLYMARKET_POLL_MS = Math.max(3000, Number(process.env.POLYMARKET_POLL_MS || PAPER_POLL_MS));
-const POLYMARKET_ENTRY_SECONDS_LEFT = Math.max(10, Number(process.env.POLYMARKET_ENTRY_SECONDS_LEFT || 120));
-const POLYMARKET_MIN_SECONDS_LEFT = Math.max(5, Number(process.env.POLYMARKET_MIN_SECONDS_LEFT || 20));
+const POLYMARKET_ENTRY_SECONDS_LEFT = Math.max(10, Number(process.env.POLYMARKET_ENTRY_SECONDS_LEFT || 30));
+const POLYMARKET_MIN_SECONDS_LEFT = Math.max(5, Number(process.env.POLYMARKET_MIN_SECONDS_LEFT || 10));
 const POLYMARKET_TRIGGER_PRICE = Math.min(0.99, Math.max(0.01, Number(process.env.POLYMARKET_TRIGGER_PRICE || PAPER_TRIGGER_PRICE)));
 const POLYMARKET_BTC5M_SLUG_PREFIX = process.env.POLYMARKET_BTC5M_SLUG_PREFIX || "btc-updown-5m";
 const POLYMARKET_GAMMA_BASE_URL = (process.env.POLYMARKET_GAMMA_BASE_URL || "https://gamma-api.polymarket.com").replace(/\/$/, "");
@@ -100,8 +106,8 @@ const tradingState = {
     seriesTicker: KALSHI_BTC15M_SERIES,
     primaryStrategy: DEFAULT_PRIMARY_STRATEGY,
     triggerPrice: PAPER_TRIGGER_PRICE,
-    entrySecondsLeft: PAPER_ENTRY_SECONDS_LEFT,
-    minSecondsLeft: PAPER_MIN_SECONDS_LEFT,
+    entrySecondsLeft: KALSHI_ENTRY_SECONDS_LEFT,
+    minSecondsLeft: KALSHI_MIN_SECONDS_LEFT,
     pollSeconds: PAPER_POLL_MS / 1000,
   },
   limits: createDefaultLimits(),
@@ -109,6 +115,7 @@ const tradingState = {
   recentTrades: [],
   activePosition: null,
   liveMarket: null,
+  lastSignal: null,
   liveCompare: createLiveCompareState(),
   polymarket: createPolymarketState(),
   startedAt: null,
@@ -280,6 +287,8 @@ function createPolymarketState() {
     primaryStrategy,
     enabledStrategies,
     limits: createDefaultLimits(),
+    entrySecondsLeft: POLYMARKET_ENTRY_SECONDS_LEFT,
+    minSecondsLeft: POLYMARKET_MIN_SECONDS_LEFT,
     marketSlugPrefix: POLYMARKET_BTC5M_SLUG_PREFIX,
     pollSeconds: POLYMARKET_POLL_MS / 1000,
     startedAt: null,
@@ -476,7 +485,19 @@ function mergePolymarketState(saved) {
       : normalizePolymarketStrategies(saved.enabledStrategies || saved.activeStrategies);
     return selected.includes(state.primaryStrategy) ? selected : [state.primaryStrategy, ...selected];
   })();
-  mergeNumberFields(state, saved, ["pollSeconds"]);
+  mergeNumberFields(state, saved, ["pollSeconds", "entrySecondsLeft", "minSecondsLeft"]);
+  state.entrySecondsLeft = Math.max(10, Math.round(Number(state.entrySecondsLeft || POLYMARKET_ENTRY_SECONDS_LEFT)));
+  state.minSecondsLeft = Math.max(5, Math.round(Number(state.minSecondsLeft || POLYMARKET_MIN_SECONDS_LEFT)));
+  if (
+    Number(saved.entrySecondsLeft) === 120 &&
+    Number(saved.minSecondsLeft) === 20 &&
+    POLYMARKET_ENTRY_SECONDS_LEFT === 30 &&
+    POLYMARKET_MIN_SECONDS_LEFT === 10
+  ) {
+    state.entrySecondsLeft = POLYMARKET_ENTRY_SECONDS_LEFT;
+    state.minSecondsLeft = POLYMARKET_MIN_SECONDS_LEFT;
+  }
+  if (state.minSecondsLeft >= state.entrySecondsLeft) state.minSecondsLeft = Math.max(5, state.entrySecondsLeft - 1);
   mergeNumberFields(state.limits, saved.limits, [
     "maxDailyLossUsd",
     "maxDailyLossPct",
@@ -533,11 +554,28 @@ function mergeTradingState(saved) {
   tradingState.recentTrades = cleanTradeList(saved.recentTrades, 100);
   tradingState.activePosition = cleanObjectOrNull(saved.activePosition);
   tradingState.liveMarket = cleanObjectOrNull(saved.liveMarket);
+  tradingState.lastSignal = cleanObjectOrNull(saved.lastSignal);
   tradingState.liveCompare = mergeLiveCompareState(saved.liveCompare);
   tradingState.polymarket = mergePolymarketState(saved.polymarket);
   tradingState.strategy.primaryStrategy = normalizePrimaryStrategy(
     saved.strategy?.primaryStrategy || saved.primaryStrategy || tradingState.liveCompare.primaryStrategy,
   );
+  Object.assign(
+    tradingState.strategy,
+    normalizeEntryTiming(
+      saved.strategy || {},
+      tradingState.strategy,
+      { entrySecondsLeft: KALSHI_ENTRY_SECONDS_LEFT, minSecondsLeft: KALSHI_MIN_SECONDS_LEFT },
+      15 * 60,
+    ),
+  );
+  if (
+    Number(saved.strategy?.entrySecondsLeft) === 120 &&
+    Number(saved.strategy?.minSecondsLeft) === 30 &&
+    KALSHI_MIN_SECONDS_LEFT > 30
+  ) {
+    tradingState.strategy.minSecondsLeft = KALSHI_MIN_SECONDS_LEFT;
+  }
   tradingState.liveCompare.enabledStrategies = ensurePrimaryStrategyEnabled(
     tradingState.liveCompare.enabledStrategies,
     tradingState.liveCompare.primaryStrategy,
@@ -1140,6 +1178,18 @@ async function placeKalshiLiveOrder({ ticker, signalSide, cost, marketPrice }) {
     estimatedFee,
     estimatedTotalCost,
     resolvedSide: order.resolvedSide,
+  };
+}
+
+function normalizeEntryTiming(input, current, defaults, intervalSeconds) {
+  const base = current || defaults;
+  const fallbackEntry = Number.isFinite(Number(base.entrySecondsLeft)) ? Number(base.entrySecondsLeft) : defaults.entrySecondsLeft;
+  const fallbackMin = Number.isFinite(Number(base.minSecondsLeft)) ? Number(base.minSecondsLeft) : defaults.minSecondsLeft;
+  const entry = Math.round(asNumber(input.entrySecondsLeft, fallbackEntry, 1, intervalSeconds - 1));
+  const min = Math.round(asNumber(input.minSecondsLeft, fallbackMin, 1, entry - 1));
+  return {
+    entrySecondsLeft: entry,
+    minSecondsLeft: Math.max(1, Math.min(entry - 1, min)),
   };
 }
 
@@ -1832,7 +1882,8 @@ async function pollPaperWorker() {
             startingCash: Math.max(1, liveEquity),
             stakeUsd: tradingState.limits.maxStakeUsd,
             minBtcMoveUsd: 70,
-            entrySecondsLeft: PAPER_ENTRY_SECONDS_LEFT,
+            entrySecondsLeft: tradingState.strategy.entrySecondsLeft,
+            minSecondsLeft: tradingState.strategy.minSecondsLeft,
             thresholdPrice: PAPER_TRIGGER_PRICE,
             maxTrades: tradingState.limits.maxTradesPerDay,
           }),
@@ -1842,6 +1893,7 @@ async function pollPaperWorker() {
       const snapshot = report.live_market || null;
       const signal = report.signal || report.summary || null;
       tradingState.liveMarket = snapshot;
+      tradingState.lastSignal = cleanObjectOrNull(signal);
       if (!snapshot) {
         tradingState.note = report.live_market_note || noCurrentBtc15mMarketMessage(marketDetails);
         return;
@@ -1979,7 +2031,7 @@ async function pollPaperWorker() {
 
     const closeTs = Date.parse(market.close_time);
     const secondsLeft = Math.round((closeTs - Date.now()) / 1000);
-    if (secondsLeft > PAPER_ENTRY_SECONDS_LEFT || secondsLeft < PAPER_MIN_SECONDS_LEFT) {
+    if (secondsLeft > tradingState.strategy.entrySecondsLeft || secondsLeft < tradingState.strategy.minSecondsLeft) {
       tradingState.note = `Watching ${market.ticker}; ${secondsLeft}s left. Waiting for entry window.`;
       return;
     }
@@ -2226,7 +2278,8 @@ async function pollLiveCompareWorker() {
           ),
           stakeUsd: tradingState.limits.maxStakeUsd,
           minBtcMoveUsd: 70,
-          entrySecondsLeft: PAPER_ENTRY_SECONDS_LEFT,
+          entrySecondsLeft: tradingState.strategy.entrySecondsLeft,
+          minSecondsLeft: tradingState.strategy.minSecondsLeft,
           thresholdPrice: PAPER_TRIGGER_PRICE,
           maxTrades: tradingState.limits.maxTradesPerDay,
         }),
@@ -2362,6 +2415,15 @@ function resetPolymarketAccounts(startingCash) {
   state.killSwitch = current.killSwitch !== false;
   state.profile = current.profile === "aggressive" ? "aggressive" : "conservative";
   state.limits = normalizeTradingSettings(current.limits || {}, current.limits || createDefaultLimits());
+  Object.assign(
+    state,
+    normalizeEntryTiming(
+      current,
+      current,
+      { entrySecondsLeft: POLYMARKET_ENTRY_SECONDS_LEFT, minSecondsLeft: POLYMARKET_MIN_SECONDS_LEFT },
+      5 * 60,
+    ),
+  );
   state.accountBalance = mergeAccountBalance(current.accountBalance, "Polymarket collateral balance");
   for (const strategy of COMPARE_STRATEGIES) {
     state.strategies[strategy].startingCash = startingCash;
@@ -2712,7 +2774,8 @@ async function pollPolymarketWorker() {
           ),
           stakeUsd: limits.maxStakeUsd,
           minBtcMoveUsd: 70,
-          entrySecondsLeft: POLYMARKET_ENTRY_SECONDS_LEFT,
+          entrySecondsLeft: state.entrySecondsLeft,
+          minSecondsLeft: state.minSecondsLeft,
           thresholdPrice: POLYMARKET_TRIGGER_PRICE,
           maxTrades: limits.maxTradesPerDay,
         }),
@@ -2970,6 +3033,15 @@ function buildSimArgs(input) {
   const dataMode = input.dataMode === "live" ? "live" : "historical";
   const intervalMinutes = Math.round(asNumber(input.intervalMinutes, 15, 5, 15)) === 5 ? 5 : 15;
   const intervalSeconds = intervalMinutes * 60;
+  const timing = normalizeEntryTiming(
+    input,
+    {
+      entrySecondsLeft: input.entrySecondsLeft,
+      minSecondsLeft: input.minSecondsLeft,
+    },
+    { entrySecondsLeft: 120, minSecondsLeft: 15 },
+    intervalSeconds,
+  );
   const args = [
     path.join("scripts", "simulate_btc_5m_virtual.py"),
     "--profile",
@@ -2985,7 +3057,7 @@ function buildSimArgs(input) {
     "--min-btc-move-usd",
     String(asNumber(input.minBtcMoveUsd, 70, 0, 10_000)),
     "--entry-seconds-left",
-    String(Math.round(asNumber(input.entrySecondsLeft, 120, 1, intervalSeconds - 1))),
+    String(timing.entrySecondsLeft),
     "--max-trades",
     String(Math.round(asNumber(input.maxTrades, profile === "aggressive" ? 20 : 12, 1, 10_000))),
     "--preview-trades",
@@ -2999,7 +3071,7 @@ function buildSimArgs(input) {
   }
 
   if (dataMode === "live") {
-    args.push("--live", "--live-min-seconds-left", "15");
+    args.push("--live", "--live-min-seconds-left", String(timing.minSecondsLeft));
   } else {
     const start = normalizeDateTime(input.start);
     const end = normalizeDateTime(input.end);
@@ -3159,6 +3231,15 @@ async function handle(req, res) {
       tradingState.killSwitch = input.killSwitch !== false;
       tradingState.limits = normalizeTradingSettings(input);
       tradingState.strategy.primaryStrategy = normalizePrimaryStrategy(input.primaryStrategy);
+      Object.assign(
+        tradingState.strategy,
+        normalizeEntryTiming(
+          input,
+          tradingState.strategy,
+          { entrySecondsLeft: KALSHI_ENTRY_SECONDS_LEFT, minSecondsLeft: KALSHI_MIN_SECONDS_LEFT },
+          15 * 60,
+        ),
+      );
       tradingState.updatedAt = new Date().toISOString();
       if (tradingState.workerStatus !== "active") {
         tradingState.note =
@@ -3225,6 +3306,20 @@ async function handle(req, res) {
       if (hasSafetySettings) {
         if (Object.prototype.hasOwnProperty.call(input, "killSwitch")) state.killSwitch = input.killSwitch !== false;
         state.limits = normalizeTradingSettings(input, state.limits || createDefaultLimits());
+      }
+      const hasTimingSettings = ["entrySecondsLeft", "minSecondsLeft"].some((key) =>
+        Object.prototype.hasOwnProperty.call(input, key),
+      );
+      if (hasTimingSettings) {
+        Object.assign(
+          state,
+          normalizeEntryTiming(
+            input,
+            state,
+            { entrySecondsLeft: POLYMARKET_ENTRY_SECONDS_LEFT, minSecondsLeft: POLYMARKET_MIN_SECONDS_LEFT },
+            5 * 60,
+          ),
+        );
       }
       for (const strategy of COMPARE_STRATEGIES) {
         if (!state.enabledStrategies.includes(strategy)) {

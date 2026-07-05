@@ -159,6 +159,26 @@ function oddsCardHtml({ label, market, upAsk, downAsk, upLabel = "UP", downLabel
   `;
 }
 
+function modelSignalCardHtml({ label = "Algorithm signal", strategy, signal }) {
+  const data = signal || {};
+  const action = String(data.action || "--");
+  const side = String(data.side || "").toUpperCase();
+  const sideText = side === "YES" ? "UP" : side === "NO" ? "DOWN" : side || "";
+  const headline = sideText ? `${sideText} ${action}` : action;
+  const details = [];
+  if (strategy) details.push(String(strategy).toUpperCase());
+  if (Number.isFinite(Number(data.confidence))) details.push(`confidence ${Number(data.confidence).toFixed(2)}x`);
+  if (Number.isFinite(Number(data.move_at_entry_usd))) details.push(`move ${money(data.move_at_entry_usd)}`);
+  if (!sideText && data.status) details.push(String(data.status).replace(/_/g, " "));
+  return `
+    <div class="comparison-item odds-card model-signal-card">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(headline)}</strong>
+      <small>${escapeHtml(details.join(" / ") || "--")}</small>
+    </div>
+  `;
+}
+
 function secondsText(value) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
   return `${Math.max(0, Math.round(Number(value)))}s`;
@@ -277,6 +297,8 @@ function polymarketFormData(form = polymarketForm, modeOverride = null) {
     payload.maxTotalLossPct = numberFromForm(data, "maxTotalLossPct");
     payload.maxStakeUsd = numberFromForm(data, "maxStakeUsd");
     payload.maxTradesPerDay = numberFromForm(data, "maxTradesPerDay");
+    payload.entrySecondsLeft = numberFromForm(data, "entrySecondsLeft");
+    payload.minSecondsLeft = numberFromForm(data, "minSecondsLeft");
   }
   return payload;
 }
@@ -329,6 +351,8 @@ function safetyFormData() {
     maxTotalLossPct: numberFromForm(data, "maxTotalLossPct"),
     maxStakeUsd: numberFromForm(data, "maxStakeUsd"),
     maxTradesPerDay: numberFromForm(data, "maxTradesPerDay"),
+    entrySecondsLeft: numberFromForm(data, "entrySecondsLeft"),
+    minSecondsLeft: numberFromForm(data, "minSecondsLeft"),
   };
 }
 
@@ -613,12 +637,20 @@ function renderKalshiLiveOdds(state) {
     return;
   }
   kalshiLiveOddsPanel.hidden = false;
-  kalshiLiveOddsPanel.innerHTML = oddsCardHtml({
-    label: "End window odds",
-    market,
-    upAsk: market.yesAsk,
-    downAsk: market.noAsk,
-  });
+  const strategy = normalizePrimaryStrategy(state?.strategy?.primaryStrategy);
+  kalshiLiveOddsPanel.innerHTML = `
+    ${oddsCardHtml({
+      label: "Market prediction",
+      market,
+      upAsk: market.yesAsk,
+      downAsk: market.noAsk,
+    })}
+    ${modelSignalCardHtml({
+      label: "Algorithm signal",
+      strategy,
+      signal: state?.lastSignal,
+    })}
+  `;
 }
 
 function renderPolymarketLiveOdds(state) {
@@ -630,13 +662,22 @@ function renderPolymarketLiveOdds(state) {
     polymarketLiveOddsPanel.innerHTML = "";
     return;
   }
+  const primaryStrategy = normalizePrimaryStrategy(state?.primaryStrategy);
+  const signal = state?.strategies?.[primaryStrategy]?.lastSignal || null;
   polymarketLiveOddsPanel.hidden = false;
-  polymarketLiveOddsPanel.innerHTML = oddsCardHtml({
-    label: "End window odds",
-    market,
-    upAsk: market.upAsk,
-    downAsk: market.downAsk,
-  });
+  polymarketLiveOddsPanel.innerHTML = `
+    ${oddsCardHtml({
+      label: "Market prediction",
+      market,
+      upAsk: market.upAsk,
+      downAsk: market.downAsk,
+    })}
+    ${modelSignalCardHtml({
+      label: "Algorithm signal",
+      strategy: primaryStrategy,
+      signal,
+    })}
+  `;
 }
 
 function renderPolymarketTrades(items) {
@@ -852,6 +893,8 @@ function fillSafetyForm(state, { force = false } = {}) {
   safetyForm.elements.maxTotalLossPct.value = limits.maxTotalLossPct ?? 20;
   safetyForm.elements.maxStakeUsd.value = limits.maxStakeUsd ?? 5;
   safetyForm.elements.maxTradesPerDay.value = limits.maxTradesPerDay ?? 12;
+  safetyForm.elements.entrySecondsLeft.value = state.strategy?.entrySecondsLeft ?? 120;
+  safetyForm.elements.minSecondsLeft.value = state.strategy?.minSecondsLeft ?? 60;
 }
 
 function fillCompareForm(state, { force = false } = {}) {
@@ -880,6 +923,8 @@ function fillPolymarketForm(state, { force = false, forceTrading = force, forceC
     polymarketForm.elements.maxTotalLossPct.value = limits.maxTotalLossPct ?? 20;
     polymarketForm.elements.maxStakeUsd.value = limits.maxStakeUsd ?? 5;
     polymarketForm.elements.maxTradesPerDay.value = limits.maxTradesPerDay ?? 12;
+    polymarketForm.elements.entrySecondsLeft.value = polymarket.entrySecondsLeft ?? 30;
+    polymarketForm.elements.minSecondsLeft.value = polymarket.minSecondsLeft ?? 10;
   }
   if (polyCompareForm && (forceCompare || !isFormDirty(polyCompareForm))) {
     if (polyCompareForm.elements.mode) polyCompareForm.elements.mode.value = "paper";

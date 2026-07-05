@@ -83,6 +83,10 @@ only used when `KALSHI_LIVE_TIME_IN_FORCE=fill_or_kill` and
 `KALSHI_LIVE_ALLOW_FILL_OR_KILL=1` are both set. Kalshi market data and orders
 use the configured `KALSHI_ENV`; set `KALSHI_ENV=prod` when you want the worker
 pointed at production Kalshi.
+The Trading page also has timing controls: Kalshi defaults to trying between
+120 and 60 seconds left, while Polymarket defaults to trying between 30 and 10
+seconds left. These can be changed without redeploying by saving the venue's
+Trading settings.
 
 Polymarket compare defaults to **paper mode**, **V1 primary**, and V1-only
 comparison. It finds the current `btc-updown-5m-<unix bucket>` market through

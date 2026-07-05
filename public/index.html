@@ -76,6 +76,16 @@
               <input name="maxTradesPerDay" type="number" min="1" step="1" value="12" inputmode="numeric" />
             </label>
 
+            <label>
+              Start trying seconds left
+              <input name="entrySecondsLeft" type="number" min="1" max="899" step="1" value="120" inputmode="numeric" />
+            </label>
+
+            <label>
+              Stop trying seconds left
+              <input name="minSecondsLeft" type="number" min="1" max="898" step="1" value="60" inputmode="numeric" />
+            </label>
+
             <button id="saveSafetyButton" class="primary-button" type="submit">Save Kalshi settings only</button>
           </form>
         </section>
@@ -189,6 +199,16 @@
             <label>
               Max trades per day
               <input name="maxTradesPerDay" type="number" min="1" step="1" value="12" inputmode="numeric" />
+            </label>
+
+            <label>
+              Start trying seconds left
+              <input name="entrySecondsLeft" type="number" min="1" max="299" step="1" value="30" inputmode="numeric" />
+            </label>
+
+            <label>
+              Stop trying seconds left
+              <input name="minSecondsLeft" type="number" min="1" max="298" step="1" value="10" inputmode="numeric" />
             </label>
 
             <button id="savePolymarketButton" class="primary-button" type="submit">Save Polymarket settings only</button>
