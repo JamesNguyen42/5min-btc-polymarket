@@ -165,6 +165,7 @@ function createAccountBalance(source) {
     apiCredsSource: null,
     refreshed: null,
     refreshError: null,
+    signatureTypeBalances: [],
   };
 }
 
@@ -325,6 +326,9 @@ function mergeAccountBalance(saved, source) {
     "refreshError",
   ]);
   if (typeof saved.refreshed === "boolean") snapshot.refreshed = saved.refreshed;
+  snapshot.signatureTypeBalances = Array.isArray(saved.signatureTypeBalances)
+    ? saved.signatureTypeBalances.filter(isPlainObject).slice(0, 4)
+    : [];
   return snapshot;
 }
 
@@ -845,7 +849,9 @@ function updatePaperEquity() {
 function todayPaperEntryCount() {
   const today = utcDay();
   return tradingState.recentTrades.filter(
-    (trade) => ["paper_entry", "kalshi_live_entry", "kalshi_live_order_error"].includes(trade.kind) && String(trade.ts || "").startsWith(today),
+    (trade) =>
+      ["paper_entry", "kalshi_live_entry", "kalshi_live_order_no_fill", "kalshi_live_order_error"].includes(trade.kind) &&
+      String(trade.ts || "").startsWith(today),
   ).length;
 }
 
@@ -892,6 +898,16 @@ function kalshiOrderSideAndPrice(signalSide, marketPrice) {
   throw new Error(`Unsupported Kalshi signal side: ${signalSide || "--"}`);
 }
 
+function kalshiFillCount(order) {
+  return dollars(order?.fill_count ?? order?.fillCount, null);
+}
+
+function kalshiEconomicFillPrice(order, fallbackPrice) {
+  const yesSidePrice = dollars(order?.average_fill_price ?? order?.averageFillPrice, null);
+  if (yesSidePrice === null) return fallbackPrice;
+  return order?.resolvedSide === "no" ? Number((1 - yesSidePrice).toFixed(6)) : yesSidePrice;
+}
+
 async function placeKalshiLiveOrder({ ticker, signalSide, cost, marketPrice }) {
   const price = Number(marketPrice);
   if (!ticker) throw new Error("Kalshi market ticker is required");
@@ -916,7 +932,7 @@ async function placeKalshiLiveOrder({ ticker, signalSide, cost, marketPrice }) {
   return {
     ...response,
     request: body,
-    contracts: count,
+    requestedContracts: count,
     effectivePrice: price,
     resolvedSide: order.resolvedSide,
   };
@@ -1633,10 +1649,12 @@ async function pollPaperWorker() {
 
       const marketId = snapshot.ticker;
       const alreadyTradedMarket = tradingState.recentTrades.some(
-        (trade) => ["kalshi_live_entry", "kalshi_live_order_error"].includes(trade.kind) && trade.market === marketId,
+        (trade) =>
+          ["kalshi_live_entry", "kalshi_live_order_no_fill", "kalshi_live_order_error"].includes(trade.kind) &&
+          trade.market === marketId,
       );
       if (alreadyTradedMarket) {
-        tradingState.note = `Kalshi live already submitted ${marketId} for this market.`;
+        tradingState.note = `Kalshi live already attempted ${marketId} for this market.`;
         return;
       }
 
@@ -1674,13 +1692,28 @@ async function pollPaperWorker() {
         return;
       }
 
-      const filledCount = Number(liveOrder.fill_count ?? liveOrder.fillCount ?? liveOrder.contracts ?? 0);
+      const filledCount = kalshiFillCount(liveOrder);
       if (!Number.isFinite(filledCount) || filledCount <= 0) {
         tradingState.note = `Kalshi live order submitted for ${marketId}, but no fill was reported.`;
+        addTrade({
+          ts: new Date().toISOString(),
+          kind: "kalshi_live_order_no_fill",
+          market: marketId,
+          strategy: primaryStrategy.toUpperCase(),
+          side: signal.side,
+          status: "live_order_no_fill",
+          pnl_usd: 0,
+          entry_price: price,
+          cost_usd: Number(cost.toFixed(6)),
+          requested_contracts: liveOrder.requestedContracts,
+          remaining_contracts: dollars(liveOrder.remaining_count ?? liveOrder.remainingCount, null),
+          live_order_id: liveOrder.order_id || liveOrder.orderID || null,
+          client_order_id: liveOrder.client_order_id || liveOrder.request?.client_order_id || null,
+        });
         return;
       }
 
-      const fillPrice = dollars(liveOrder.average_fill_price, null) ?? price;
+      const fillPrice = kalshiEconomicFillPrice(liveOrder, price);
       const actualCost = Number((filledCount * fillPrice).toFixed(6));
       const position = {
         marketTicker: marketId,
@@ -2267,6 +2300,9 @@ function fetchPolymarketBalanceSnapshot() {
           apiCredsSource: payload.apiCredsSource || null,
           refreshed: payload.refreshed === true,
           refreshError: payload.refreshError || null,
+          signatureTypeBalances: Array.isArray(payload.signatureTypeBalances)
+            ? payload.signatureTypeBalances.filter(isPlainObject).slice(0, 4)
+            : [],
           checkedAt: payload.checkedAt || new Date().toISOString(),
         });
       } catch (err) {

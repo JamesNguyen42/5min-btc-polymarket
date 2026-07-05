@@ -57,6 +57,10 @@ const polymarketReturn = document.querySelector("#polymarketReturn");
 const polymarketMode = document.querySelector("#polymarketMode");
 const polymarketPanel = document.querySelector("#polymarketPanel");
 const polymarketTradeRows = document.querySelector("#polymarketTradeRows");
+const polyCompareStatus = document.querySelector("#polyCompareStatus");
+const polyCompareNote = document.querySelector("#polyCompareNote");
+const polyComparePanel = document.querySelector("#polyComparePanel");
+const polyCompareTradeRows = document.querySelector("#polyCompareTradeRows");
 const API_BASE_URL = String(window.SIM_CONFIG?.apiBaseUrl || "").replace(/\/$/, "");
 const ALL_COMPARE_STRATEGIES = ["v1", "v2", "v3"];
 const DEFAULT_COMPARE_STRATEGIES = ["v1", "v3"];
@@ -106,6 +110,19 @@ function shortAddress(value) {
   const text = String(value || "").trim();
   if (!text) return "--";
   return text.length > 13 ? `${text.slice(0, 6)}...${text.slice(-4)}` : text;
+}
+
+function signatureTypeScanText(items) {
+  const rows = Array.isArray(items) ? items : [];
+  const summaries = rows.map((item) => (item.error ? `${item.signatureType}: error` : `${item.signatureType}: ${money(item.availableCash)}`));
+  return summaries.length ? summaries.join(" | ") : "--";
+}
+
+function signatureTypeBestBalance(items) {
+  const rows = Array.isArray(items) ? items : [];
+  return rows
+    .filter((item) => Number(item.availableCash || 0) > 0)
+    .sort((a, b) => Number(b.availableCash || 0) - Number(a.availableCash || 0))[0] || null;
 }
 
 function numberFromForm(data, key) {
@@ -507,6 +524,31 @@ function renderPolymarketTrades(items) {
     .join("");
 }
 
+function renderPolymarketCompareTrades(items) {
+  if (!polyCompareTradeRows) return;
+  if (!items || items.length === 0) {
+    polyCompareTradeRows.innerHTML = '<tr><td colspan="6" class="empty">No Polymarket compare trades yet.</td></tr>';
+    return;
+  }
+
+  polyCompareTradeRows.innerHTML = items
+    .map((trade) => {
+      const value = Number(trade.pnl_usd || 0);
+      const resultClass = value >= 0 ? "win" : "lose";
+      return `
+        <tr>
+          <td>${shortDate(trade.ts)}</td>
+          <td>${trade.market || "--"}</td>
+          <td>${trade.strategy || "--"}</td>
+          <td>${trade.side || "--"}</td>
+          <td>${trade.status || "--"}</td>
+          <td class="${resultClass}">${money(value)}</td>
+        </tr>
+      `;
+    })
+    .join("");
+}
+
 function renderPolymarketStatus(polymarket) {
   const state = polymarket || {};
   const active = state.workerStatus === "active";
@@ -541,56 +583,80 @@ function renderPolymarketStatus(polymarket) {
   if (startPolyCompareButton) startPolyCompareButton.disabled = active || liveArmed;
   if (stopPolyCompareButton) stopPolyCompareButton.disabled = !active || liveArmed;
 
-  if (polymarketPanel) {
-    polymarketPanel.hidden = false;
-    const signalStrategy = strategies[primaryStrategy]?.lastSignal
-      ? primaryStrategy
-      : [...enabledStrategies].reverse().find((strategy) => strategies[strategy]?.lastSignal) || primaryStrategy;
-    const signalAccount = strategies[signalStrategy] || {};
-    const cards = ALL_COMPARE_STRATEGIES.map((strategy) => {
-      const account = strategies[strategy] || {};
-      const enabled = enabledSet.has(strategy);
-      return `
-        <div class="comparison-item ${enabled ? "" : "muted-card"}">
-          <span>${strategy.toUpperCase()} paper${strategy === primaryStrategy ? " primary" : ""}</span>
-          <strong class="${enabled ? "" : "neutral"}">${enabled ? pct(account.returnPct) : "Disabled"}</strong>
-          <small>${enabled ? `${money(account.currentEquity)} / ${account.entriesToday ?? 0} entries` : "Enable in controls"}</small>
-        </div>
-      `;
-    }).join("");
-    const market = state.liveMarket || {};
-    const balanceHint =
-      Number(accountBalance.availableCash || 0) === 0 && !accountBalance.error
-        ? "Check signer/funder"
-        : accountBalance.error
-          ? "Balance error"
-          : "CLOB balance";
-    polymarketPanel.innerHTML = `
-      ${cards}
-      <div class="comparison-item">
-        <span>${signalStrategy.toUpperCase()} signal</span>
-        <strong>${signalAccount.lastSignal?.action || "--"}</strong>
-        <small>${signalAccount.lastSignal?.side || "--"} / ${money(signalAccount.lastSignal?.move_at_entry_usd)}</small>
-      </div>
-      <div class="comparison-item">
-        <span>Polymarket ask</span>
-        <strong>${market.upAsk === undefined && market.downAsk === undefined ? "--" : `${price(market.upAsk)} / ${price(market.downAsk)}`}</strong>
-        <small>UP / DOWN</small>
-      </div>
-      <div class="comparison-item diagnostic-card">
-        <span>Balance source</span>
-        <strong class="compact-value">${balanceHint}</strong>
-        <small class="detail-value">raw ${accountBalance.rawBalance ?? "--"} / allowance ${accountBalance.rawAllowance ?? "--"}</small>
-      </div>
-      <div class="comparison-item diagnostic-card">
-        <span>Signer / funder</span>
-        <strong class="compact-value">${shortAddress(accountBalance.signerAddress)} / ${shortAddress(accountBalance.funderAddress)}</strong>
-        <small class="detail-value">type ${accountBalance.signatureType ?? "--"} / ${accountBalance.apiCredsSource || "--"} / ${shortDate(accountBalance.checkedAt)}</small>
+  const signalStrategy = strategies[primaryStrategy]?.lastSignal
+    ? primaryStrategy
+    : [...enabledStrategies].reverse().find((strategy) => strategies[strategy]?.lastSignal) || primaryStrategy;
+  const signalAccount = strategies[signalStrategy] || {};
+  const cards = ALL_COMPARE_STRATEGIES.map((strategy) => {
+    const account = strategies[strategy] || {};
+    const enabled = enabledSet.has(strategy);
+    return `
+      <div class="comparison-item ${enabled ? "" : "muted-card"}">
+        <span>${strategy.toUpperCase()} paper${strategy === primaryStrategy ? " primary" : ""}</span>
+        <strong class="${enabled ? "" : "neutral"}">${enabled ? pct(account.returnPct) : "Disabled"}</strong>
+        <small>${enabled ? `${money(account.currentEquity)} / ${account.entriesToday ?? 0} entries` : "Enable in controls"}</small>
       </div>
     `;
+  }).join("");
+  const market = state.liveMarket || {};
+  const bestSignatureBalance = signatureTypeBestBalance(accountBalance.signatureTypeBalances);
+  const balanceHint =
+    Number(accountBalance.availableCash || 0) === 0 && !accountBalance.error
+      ? bestSignatureBalance
+        ? `Try type ${bestSignatureBalance.signatureType}`
+        : "Check signer/funder"
+      : accountBalance.error
+        ? "Balance error"
+        : "CLOB balance";
+  const panelHtml = `
+    ${cards}
+    <div class="comparison-item">
+      <span>${signalStrategy.toUpperCase()} signal</span>
+      <strong>${signalAccount.lastSignal?.action || "--"}</strong>
+      <small>${signalAccount.lastSignal?.side || "--"} / ${money(signalAccount.lastSignal?.move_at_entry_usd)}</small>
+    </div>
+    <div class="comparison-item">
+      <span>Polymarket ask</span>
+      <strong>${market.upAsk === undefined && market.downAsk === undefined ? "--" : `${price(market.upAsk)} / ${price(market.downAsk)}`}</strong>
+      <small>UP / DOWN</small>
+    </div>
+    <div class="comparison-item diagnostic-card">
+      <span>Balance source</span>
+      <strong class="compact-value">${balanceHint}</strong>
+      <small class="detail-value">raw ${accountBalance.rawBalance ?? "--"} / allowance ${accountBalance.rawAllowance ?? "--"}</small>
+    </div>
+    <div class="comparison-item diagnostic-card">
+      <span>Signer / funder</span>
+      <strong class="compact-value">${shortAddress(accountBalance.signerAddress)} / ${shortAddress(accountBalance.funderAddress)}</strong>
+      <small class="detail-value">type ${accountBalance.signatureType ?? "--"} / ${accountBalance.apiCredsSource || "--"} / ${shortDate(accountBalance.checkedAt)}</small>
+    </div>
+    <div class="comparison-item diagnostic-card">
+      <span>Signature scan</span>
+      <strong class="compact-value">${bestSignatureBalance ? `type ${bestSignatureBalance.signatureType} has ${money(bestSignatureBalance.availableCash)}` : "--"}</strong>
+      <small class="detail-value">${signatureTypeScanText(accountBalance.signatureTypeBalances)}</small>
+    </div>
+  `;
+
+  if (polymarketPanel) {
+    polymarketPanel.hidden = false;
+    polymarketPanel.innerHTML = panelHtml;
+  }
+  if (polyComparePanel) {
+    polyComparePanel.hidden = false;
+    polyComparePanel.innerHTML = panelHtml;
+  }
+  if (polyCompareStatus) {
+    polyCompareStatus.textContent = state.workerStatus || "inactive";
+    polyCompareStatus.className = `return-value ${active ? "gain" : "neutral"}`;
+  }
+  if (polyCompareNote) {
+    polyCompareNote.textContent = accountBalance.error
+      ? `${state.note || "Polymarket compare worker is inactive."} Balance: ${accountBalance.error}`
+      : state.note || "Polymarket compare worker is inactive.";
   }
 
   renderPolymarketTrades(state.recentTrades || []);
+  renderPolymarketCompareTrades(state.recentTrades || []);
 }
 
 function renderReport(report) {
@@ -808,7 +874,14 @@ async function postTradingAction(path, button, label) {
     if (!response.ok) throw new Error(payload.error || "trading action failed");
     renderTradingStatus(payload);
   } catch (err) {
-    const noteTarget = path.includes("polymarket") ? polymarketNote : path.includes("live-compare") ? compareWorkerNote : tradingNote;
+    const noteTarget =
+      path.includes("polymarket") && button === stopPolyCompareButton
+        ? polyCompareNote
+        : path.includes("polymarket")
+          ? polymarketNote
+          : path.includes("live-compare")
+            ? compareWorkerNote
+            : tradingNote;
     noteTarget.textContent = err.message || String(err);
   } finally {
     button.textContent = label;
@@ -881,7 +954,7 @@ async function startPolyCompareWorker() {
     renderTradingStatus(payload);
     started = payload.polymarket?.workerStatus === "active";
   } catch (err) {
-    polymarketNote.textContent = err.message || String(err);
+    polyCompareNote.textContent = err.message || String(err);
   } finally {
     if (!started) startPolyCompareButton.disabled = false;
     startPolyCompareButton.textContent = "Start Polymarket compare";

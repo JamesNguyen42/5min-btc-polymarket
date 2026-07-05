@@ -312,7 +312,7 @@
 
           <div id="comparisonPanel" class="comparison-panel" hidden></div>
 
-          <div class="table-wrap">
+          <div class="table-wrap transaction-window">
             <table>
               <thead>
                 <tr>
@@ -385,7 +385,7 @@
 
           <div id="liveComparePanel" class="comparison-panel" hidden></div>
 
-          <div class="table-wrap">
+          <div class="table-wrap transaction-window">
             <table>
               <thead>
                 <tr>
@@ -454,6 +454,38 @@
           <div class="action-row">
             <button id="startPolyCompareButton" class="secondary-button" type="button">Start Polymarket compare</button>
             <button id="stopPolyCompareButton" class="danger-button" type="button">Stop Polymarket compare</button>
+          </div>
+        </section>
+
+        <section class="results" aria-label="Polymarket comparison monitor">
+          <div class="headline">
+            <div>
+              <p class="eyebrow">Polymarket compare</p>
+              <p id="polyCompareNote" class="muted">Polymarket compare worker is inactive.</p>
+            </div>
+            <div id="polyCompareStatus" class="return-value neutral">inactive</div>
+          </div>
+
+          <div id="polyComparePanel" class="comparison-panel" hidden></div>
+
+          <div class="table-wrap transaction-window">
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Market</th>
+                  <th>Model</th>
+                  <th>Side</th>
+                  <th>Status</th>
+                  <th>PnL</th>
+                </tr>
+              </thead>
+              <tbody id="polyCompareTradeRows">
+                <tr>
+                  <td colspan="6" class="empty">No Polymarket compare trades yet.</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </section>
       </section>

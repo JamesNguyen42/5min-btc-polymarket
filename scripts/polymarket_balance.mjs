@@ -74,6 +74,57 @@ export function collateralUnits(raw, unit = process.env.POLYMARKET_BALANCE_UNIT 
   }
 }
 
+function normalizeRawAllowance(balance) {
+  return (
+    balance.allowance ??
+    (balance.allowances && Object.values(balance.allowances).find((value) => value !== undefined && value !== null)) ??
+    null
+  );
+}
+
+function balanceSnapshot(balance) {
+  const rawAllowance = normalizeRawAllowance(balance);
+  return {
+    availableCash: collateralUnits(balance.balance),
+    allowance: collateralUnits(rawAllowance),
+    rawBalance: balance.balance ?? null,
+    rawAllowance,
+  };
+}
+
+async function scanSignatureType({ host, chainId, signer, creds, accountAddress, funderAddress, signatureType }) {
+  const scanFunderAddress = signatureType === 0 ? accountAddress : funderAddress;
+  if (!scanFunderAddress) {
+    return {
+      signatureType,
+      funderAddress: null,
+      error: "missing funder address",
+    };
+  }
+  try {
+    const client = new ClobClient({
+      host,
+      chain: chainId,
+      signer,
+      creds,
+      signatureType,
+      funderAddress: scanFunderAddress,
+    });
+    const balance = await client.getBalanceAllowance({ asset_type: AssetType.COLLATERAL });
+    return {
+      signatureType,
+      funderAddress: scanFunderAddress,
+      ...balanceSnapshot(balance),
+    };
+  } catch (err) {
+    return {
+      signatureType,
+      funderAddress: scanFunderAddress,
+      error: err.message || String(err),
+    };
+  }
+}
+
 async function main() {
   const privateKey = normalizePrivateKey(
     requireEnv("POLYMARKET_PRIVATE_KEY", envAny(["PM_PRIVATE_KEY", "PRIVATE_KEY"])),
@@ -124,25 +175,35 @@ async function main() {
     }
   }
 
-  const rawAllowance =
-    balance.allowance ??
-    (balance.allowances && Object.values(balance.allowances).find((value) => value !== undefined && value !== null)) ??
-    null;
+  const signatureTypeBalances = [];
+  for (const type of [0, 1, 2, 3]) {
+    signatureTypeBalances.push(
+      await scanSignatureType({
+        host,
+        chainId,
+        signer,
+        creds,
+        accountAddress: account.address,
+        funderAddress,
+        signatureType: type,
+      }),
+    );
+  }
+
+  const snapshot = balanceSnapshot(balance);
 
   process.stdout.write(
     JSON.stringify({
       ok: true,
       balance,
-      availableCash: collateralUnits(balance.balance),
-      allowance: collateralUnits(rawAllowance),
-      rawBalance: balance.balance ?? null,
-      rawAllowance,
+      ...snapshot,
       refreshed,
       refreshError,
       signerAddress: account.address,
       funderAddress,
       signatureType,
       apiCredsSource,
+      signatureTypeBalances,
       checkedAt: new Date().toISOString(),
     }),
   );

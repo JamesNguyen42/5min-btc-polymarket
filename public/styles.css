@@ -524,6 +524,10 @@ button:focus-visible {
   min-width: 0;
 }
 
+.transaction-window {
+  max-height: 292px;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
