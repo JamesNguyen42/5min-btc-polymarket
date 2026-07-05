@@ -108,6 +108,7 @@ const tradingState = {
   lastTrade: null,
   recentTrades: [],
   activePosition: null,
+  liveMarket: null,
   liveCompare: createLiveCompareState(),
   polymarket: createPolymarketState(),
   startedAt: null,
@@ -531,6 +532,7 @@ function mergeTradingState(saved) {
   tradingState.lastTrade = cleanObjectOrNull(saved.lastTrade);
   tradingState.recentTrades = cleanTradeList(saved.recentTrades, 100);
   tradingState.activePosition = cleanObjectOrNull(saved.activePosition);
+  tradingState.liveMarket = cleanObjectOrNull(saved.liveMarket);
   tradingState.liveCompare = mergeLiveCompareState(saved.liveCompare);
   tradingState.polymarket = mergePolymarketState(saved.polymarket);
   tradingState.strategy.primaryStrategy = normalizePrimaryStrategy(
@@ -1839,6 +1841,7 @@ async function pollPaperWorker() {
       );
       const snapshot = report.live_market || null;
       const signal = report.signal || report.summary || null;
+      tradingState.liveMarket = snapshot;
       if (!snapshot) {
         tradingState.note = report.live_market_note || noCurrentBtc15mMarketMessage(marketDetails);
         return;

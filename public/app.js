@@ -42,6 +42,7 @@ const currentEquity = document.querySelector("#currentEquity");
 const realizedPnl = document.querySelector("#realizedPnl");
 const liveReturn = document.querySelector("#liveReturn");
 const tradingMode = document.querySelector("#tradingMode");
+const kalshiLiveOddsPanel = document.querySelector("#kalshiLiveOddsPanel");
 const liveTradeRows = document.querySelector("#liveTradeRows");
 const compareWorkerStatus = document.querySelector("#compareWorkerStatus");
 const compareWorkerNote = document.querySelector("#compareWorkerNote");
@@ -107,6 +108,54 @@ function pct(value) {
 function price(value) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
   return Number(value).toFixed(2);
+}
+
+function probability(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
+  return `${Number(value).toFixed(1)}%`;
+}
+
+function impliedOdds(upAsk, downAsk) {
+  const up = Number(upAsk);
+  const down = Number(downAsk);
+  const hasUp = Number.isFinite(up) && up > 0;
+  const hasDown = Number.isFinite(down) && down > 0;
+  if (hasUp && hasDown) {
+    const total = up + down;
+    if (total > 0) {
+      return {
+        up: (up / total) * 100,
+        down: (down / total) * 100,
+      };
+    }
+  }
+  if (hasUp) {
+    const upPct = Math.max(0, Math.min(100, up * 100));
+    return { up: upPct, down: 100 - upPct };
+  }
+  if (hasDown) {
+    const downPct = Math.max(0, Math.min(100, down * 100));
+    return { up: 100 - downPct, down: downPct };
+  }
+  return { up: null, down: null };
+}
+
+function oddsCardHtml({ label, market, upAsk, downAsk, upLabel = "UP", downLabel = "DOWN" }) {
+  const odds = impliedOdds(upAsk, downAsk);
+  const hasOdds = Number.isFinite(odds.up) && Number.isFinite(odds.down);
+  const upWidth = hasOdds ? Math.max(0, Math.min(100, odds.up)) : 0;
+  const downWidth = hasOdds ? Math.max(0, Math.min(100, odds.down)) : 0;
+  return `
+    <div class="comparison-item odds-card">
+      <span>${label}</span>
+      <strong>${upLabel} ${probability(odds.up)} / ${downLabel} ${probability(odds.down)}</strong>
+      <div class="odds-bars" aria-hidden="true">
+        <div class="odds-bar up" style="width: ${upWidth}%"></div>
+        <div class="odds-bar down" style="width: ${downWidth}%"></div>
+      </div>
+      <small>${secondsText(market?.secondsLeft)} left / ask ${price(upAsk)} / ${price(downAsk)}</small>
+    </div>
+  `;
 }
 
 function secondsText(value) {
@@ -553,6 +602,24 @@ function renderLiveCompareStatus(compare) {
   renderCompareTrades(state.recentTrades || []);
 }
 
+function renderKalshiLiveOdds(state) {
+  if (!kalshiLiveOddsPanel) return;
+  const market = state?.liveMarket || null;
+  const active = state?.workerStatus === "active";
+  if (!active || !market) {
+    kalshiLiveOddsPanel.hidden = true;
+    kalshiLiveOddsPanel.innerHTML = "";
+    return;
+  }
+  kalshiLiveOddsPanel.hidden = false;
+  kalshiLiveOddsPanel.innerHTML = oddsCardHtml({
+    label: "End window odds",
+    market,
+    upAsk: market.yesAsk,
+    downAsk: market.noAsk,
+  });
+}
+
 function renderPolymarketTrades(items) {
   if (!polymarketTradeRows) return;
   if (!items || items.length === 0) {
@@ -681,11 +748,12 @@ function renderPolymarketStatus(polymarket) {
       <small class="detail-value">${signalAccount.lastSignal?.side || "--"} / ${money(signalAccount.lastSignal?.move_at_entry_usd)}</small>
     </div>`;
   const marketCard = `
-    <div class="comparison-item">
-      <span>Polymarket ask</span>
-      <strong>${market.upAsk === undefined && market.downAsk === undefined ? "--" : `${price(market.upAsk)} / ${price(market.downAsk)}`}</strong>
-      <small>UP / DOWN</small>
-    </div>`;
+    ${oddsCardHtml({
+      label: "End window odds",
+      market,
+      upAsk: market.upAsk,
+      downAsk: market.downAsk,
+    })}`;
   const diagnosticCards = `
     <div class="comparison-item diagnostic-card">
       <span>Balance source</span>
@@ -818,6 +886,7 @@ function renderTradingStatus(state) {
       ? `${state.note || `Updated ${shortDate(state.updatedAt)}`} Balance: ${accountBalance.error}`
       : state.note || `Updated ${shortDate(state.updatedAt)}`;
   setStatus(killSwitchBadge, state.killSwitch === false ? "Unprotected" : "Protected", state.killSwitch === false ? "running" : "error");
+  renderKalshiLiveOdds(state);
   renderLiveCompareStatus(state.liveCompare);
   renderPolymarketStatus(state.polymarket);
   renderLiveTrades(state.recentTrades || []);

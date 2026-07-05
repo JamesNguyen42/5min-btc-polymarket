@@ -469,6 +469,34 @@ button:focus-visible {
   word-break: normal;
 }
 
+.odds-card strong {
+  font-size: clamp(19px, 1.7vw, 24px);
+  white-space: normal;
+}
+
+.odds-bars {
+  display: flex;
+  width: 100%;
+  height: 8px;
+  margin: 8px 0 7px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #eef2ed;
+}
+
+.odds-bar {
+  height: 100%;
+}
+
+.odds-bar.up {
+  background: #2f7a61;
+}
+
+.odds-bar.down {
+  background: #c46b5f;
+}
+
 .comparison-item.diagnostic-card strong.compact-value {
   font-size: clamp(18px, 1.6vw, 22px);
   line-height: 1.12;
