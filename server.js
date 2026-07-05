@@ -2700,6 +2700,55 @@ function placePolymarketLiveOrder(input) {
   });
 }
 
+function arrayValue(value) {
+  if (Array.isArray(value)) return value.filter(Boolean);
+  if (value === undefined || value === null || value === "") return [];
+  return [value];
+}
+
+function rawUsdcValue(value, fallback = null) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n / 1_000_000 : fallback;
+}
+
+function polymarketLiveOrderResponse(liveOrder) {
+  return liveOrder?.order && typeof liveOrder.order === "object" ? liveOrder.order : liveOrder;
+}
+
+function polymarketLiveOrderFill(liveOrder, fallbackCost, fallbackPrice) {
+  const order = polymarketLiveOrderResponse(liveOrder) || {};
+  const helperFill = liveOrder?.fill && typeof liveOrder.fill === "object" ? liveOrder.fill : {};
+  const status = String(helperFill.status || order.status || "").toLowerCase();
+  const success = helperFill.success === true || order.success === true;
+  const error = String(helperFill.errorMsg || order.errorMsg || order.error || liveOrder?.error || "").trim();
+  const transactionHashes = arrayValue(helperFill.transactionHashes || order.transactionsHashes || order.transactionHashes);
+  const tradeIds = arrayValue(helperFill.tradeIds || helperFill.tradeIDs || order.tradeIDs || order.tradeIds);
+  const responseCost = dollars(helperFill.filledCostUsd, null) ?? rawUsdcValue(order.makingAmount, null);
+  const responseContracts = dollars(helperFill.filledContracts, null) ?? rawUsdcValue(order.takingAmount, null);
+  const filled =
+    success &&
+    status === "matched" &&
+    Number.isFinite(responseCost) &&
+    responseCost > 0 &&
+    Number.isFinite(responseContracts) &&
+    responseContracts > 0 &&
+    (transactionHashes.length > 0 || tradeIds.length > 0 || helperFill.filled === true);
+  const cost = filled ? Number(responseCost.toFixed(6)) : Number(fallbackCost.toFixed(6));
+  const contracts = filled ? Number(responseContracts.toFixed(6)) : Number((fallbackCost / fallbackPrice).toFixed(6));
+  return {
+    filled,
+    success,
+    status: status || (success ? "accepted" : "rejected"),
+    reason: filled ? "matched" : error || helperFill.reason || (status ? `CLOB status ${status}` : "no matched fill reported"),
+    orderId: helperFill.orderId || order.orderID || order.orderId || order.id || liveOrder?.orderId || liveOrder?.id || null,
+    transactionHashes,
+    tradeIds,
+    cost,
+    contracts,
+    price: filled && responseContracts > 0 ? Number((responseCost / responseContracts).toFixed(6)) : fallbackPrice,
+  };
+}
+
 async function maybePlacePolymarketLiveOrder({ strategy, signal, snapshot, cost, price }) {
   const state = tradingState.polymarket;
   const primary = normalizePrimaryStrategy(state.primaryStrategy);
@@ -2797,6 +2846,7 @@ async function pollPolymarketWorker() {
       account.lastSignal = activeStrategies.includes(strategy) ? signal : null;
     }
 
+    let tradeActionNote = "";
     for (const strategy of activeStrategies) {
       const account = state.strategies[strategy];
       const strategyReport = report.strategies?.[strategy];
@@ -2815,17 +2865,26 @@ async function pollPolymarketWorker() {
       if (!price || price <= 0 || cost <= 0) continue;
 
       const alreadyTradedMarket = account.recentTrades.some(
-        (trade) => (trade.kind === "polymarket_entry" || trade.kind === "polymarket_order_error") && trade.market === marketId,
+        (trade) =>
+          [
+            "polymarket_entry",
+            "polymarket_order_error",
+            "polymarket_live_order_no_fill",
+            "polymarket_live_order_unconfirmed",
+          ].includes(trade.kind) && trade.market === marketId,
       );
       if (alreadyTradedMarket) continue;
 
       let liveOrder = null;
+      let liveFill = null;
+      const liveModePrimary = state.mode === "live" && state.liveArmed === true && strategy === primaryStrategy;
       try {
         liveOrder = await maybePlacePolymarketLiveOrder({ strategy, signal, snapshot, cost, price });
       } catch (err) {
         const message = err.message || String(err);
         state.lastError = message;
-        state.note = `Polymarket live order error: ${message}`;
+        tradeActionNote = `Polymarket live order error: ${message}`;
+        state.note = tradeActionNote;
         addPolymarketTrade(strategy, {
           ts: new Date().toISOString(),
           kind: "polymarket_order_error",
@@ -2840,17 +2899,50 @@ async function pollPolymarketWorker() {
         continue;
       }
 
-      const contracts = Number((cost / price).toFixed(6));
+      if (liveModePrimary && liveOrder) {
+        liveFill = polymarketLiveOrderFill(liveOrder, cost, price);
+        await syncPolymarketAccountBalance({ force: true });
+        if (!liveFill.filled) {
+          const pending = ["delayed", "live"].includes(liveFill.status);
+          tradeActionNote = `Polymarket live order for ${marketId} did not confirm a fill: ${liveFill.reason}.`;
+          state.note = tradeActionNote;
+          addPolymarketTrade(strategy, {
+            ts: new Date().toISOString(),
+            kind: pending ? "polymarket_live_order_unconfirmed" : "polymarket_live_order_no_fill",
+            market: marketId,
+            side: signal.side,
+            status: pending ? "live_order_unconfirmed" : "live_order_no_fill",
+            pnl_usd: 0,
+            entry_price: price,
+            cost_usd: Number(cost.toFixed(6)),
+            requested_contracts: Number((cost / price).toFixed(6)),
+            live_order_id: liveFill.orderId,
+            live_order_status: liveFill.status,
+            live_order_success: liveFill.success,
+            transaction_hashes: liveFill.transactionHashes,
+            trade_ids: liveFill.tradeIds,
+            order_response: polymarketLiveOrderResponse(liveOrder),
+            error: liveFill.reason,
+          });
+          continue;
+        }
+      }
+
+      const positionCost = liveFill?.filled ? liveFill.cost : Number(cost.toFixed(6));
+      const contracts = liveFill?.filled ? liveFill.contracts : Number((cost / price).toFixed(6));
+      const positionPrice = liveFill?.filled ? liveFill.price : price;
       const position = {
         marketSlug: snapshot.slug,
         side: signal.side,
         tokenId: sideTokenFromPolymarket(snapshot, signal.side),
-        price,
-        cost: Number(cost.toFixed(6)),
+        price: positionPrice,
+        cost: positionCost,
         contracts,
         enteredAt: new Date().toISOString(),
         marketEnd: snapshot.closeTime,
-        liveOrderId: liveOrder?.orderId || liveOrder?.id || liveOrder?.orderID || null,
+        liveOrderId: liveFill?.orderId || liveOrder?.orderId || liveOrder?.id || liveOrder?.orderID || null,
+        transactionHashes: liveFill?.transactionHashes || [],
+        tradeIds: liveFill?.tradeIds || [],
         liveOrder,
       };
       account.activePosition = position;
@@ -2860,13 +2952,18 @@ async function pollPolymarketWorker() {
         kind: "polymarket_entry",
         market: marketId,
         side: position.side,
-        status: liveOrder ? "live_order_submitted" : "open",
+        status: liveOrder ? "live_order_filled" : "open",
         pnl_usd: 0,
         entry_price: position.price,
         cost_usd: position.cost,
         contracts: position.contracts,
         live_order_id: position.liveOrderId,
+        transaction_hashes: position.transactionHashes,
+        trade_ids: position.tradeIds,
       });
+      if (liveOrder) {
+        tradeActionNote = `Polymarket live entered ${position.side} ${position.marketSlug} at ${position.price.toFixed(4)}.`;
+      }
     }
 
     const activeSet = new Set(activeStrategies);
@@ -2879,9 +2976,10 @@ async function pollPolymarketWorker() {
     const disabled = COMPARE_STRATEGIES.filter((strategy) => !activeSet.has(strategy))
       .map((strategy) => strategy.toUpperCase())
       .join(", ");
-    state.note = `Polymarket 5m ${state.mode}${state.liveArmed ? " live armed" : ""}. Primary: ${primaryStrategy.toUpperCase()}. ${
+    const statusNote = `Polymarket 5m ${state.mode}${state.liveArmed ? " live armed" : ""}. Primary: ${primaryStrategy.toUpperCase()}. ${
       signalNotes || "No selected strategy"
     }${disabled ? `. Disabled: ${disabled}` : ""}. Market ${snapshot.slug}; ${snapshot.secondsLeft}s left.`;
+    state.note = tradeActionNote || statusNote;
   } catch (err) {
     state.lastError = err.message || String(err);
     state.note = `Polymarket worker error: ${state.lastError}`;

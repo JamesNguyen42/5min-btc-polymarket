@@ -39,6 +39,48 @@ function normalizePrivateKey(value) {
   return value.startsWith("0x") ? value : `0x${value}`;
 }
 
+function arrayValue(value) {
+  if (Array.isArray(value)) return value.filter(Boolean);
+  if (value === undefined || value === null || value === "") return [];
+  return [value];
+}
+
+function rawUsdcValue(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n / 1_000_000 : null;
+}
+
+function orderFillSummary(order) {
+  const status = String(order?.status || "").toLowerCase();
+  const success = order?.success === true;
+  const errorMsg = String(order?.errorMsg || order?.error || "").trim();
+  const transactionHashes = arrayValue(order?.transactionsHashes || order?.transactionHashes);
+  const tradeIds = arrayValue(order?.tradeIDs || order?.tradeIds);
+  const filledCostUsd = rawUsdcValue(order?.makingAmount);
+  const filledContracts = rawUsdcValue(order?.takingAmount);
+  const hasFillAmounts =
+    Number.isFinite(filledCostUsd) && filledCostUsd > 0 && Number.isFinite(filledContracts) && filledContracts > 0;
+  const hasExecutionIds = transactionHashes.length > 0 || tradeIds.length > 0;
+  const filled = success && status === "matched" && hasFillAmounts && hasExecutionIds;
+  const accepted = success && !errorMsg;
+  return {
+    accepted,
+    filled,
+    status: status || (success ? "accepted" : "rejected"),
+    success,
+    errorMsg,
+    orderId: order?.orderID || order?.orderId || order?.id || null,
+    transactionHashes,
+    tradeIds,
+    filledCostUsd: filled ? Number(filledCostUsd.toFixed(6)) : 0,
+    filledContracts: filled ? Number(filledContracts.toFixed(6)) : 0,
+    averagePrice: filled && filledContracts > 0 ? Number((filledCostUsd / filledContracts).toFixed(6)) : null,
+    reason: filled
+      ? "matched"
+      : errorMsg || (status ? `CLOB status ${status}` : "CLOB response did not report a matched fill"),
+  };
+}
+
 async function main() {
   const input = JSON.parse(await readStdin());
   const privateKey = normalizePrivateKey(
@@ -51,9 +93,11 @@ async function main() {
   const signer = createWalletClient({ account, chain, transport: http() });
 
   let creds = apiCredsFromEnv();
+  let apiCredsSource = "env";
   if (!creds) {
     const keyClient = new ClobClient({ host, chain: chainId, signer });
     creds = await keyClient.createOrDeriveApiKey();
+    apiCredsSource = "derived";
   }
 
   const signatureType = Number(envAny(["POLYMARKET_SIGNATURE_TYPE", "PM_SIGNATURE_TYPE"], "3"));
@@ -93,17 +137,20 @@ async function main() {
     },
     OrderType.FOK,
   );
+  const fill = orderFillSummary(order);
 
   process.stdout.write(
     JSON.stringify({
-      ok: true,
+      ok: fill.accepted,
       order,
+      fill,
       tokenId: String(input.tokenId),
       side,
       amount,
       price,
       marketSlug: input.marketSlug || null,
       strategy: input.strategy || null,
+      apiCredsSource,
     }),
   );
 }
