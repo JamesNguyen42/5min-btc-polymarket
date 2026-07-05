@@ -468,6 +468,22 @@ button:focus-visible {
   word-break: normal;
 }
 
+.comparison-item.diagnostic-card strong.compact-value {
+  font-size: clamp(18px, 1.6vw, 22px);
+  line-height: 1.12;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.comparison-item small.detail-value {
+  line-height: 1.25;
+  text-transform: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .comparison-item strong.gain {
   color: var(--gain);
 }

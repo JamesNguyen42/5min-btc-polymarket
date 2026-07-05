@@ -577,15 +577,15 @@ function renderPolymarketStatus(polymarket) {
         <strong>${market.upAsk === undefined && market.downAsk === undefined ? "--" : `${price(market.upAsk)} / ${price(market.downAsk)}`}</strong>
         <small>UP / DOWN</small>
       </div>
-      <div class="comparison-item">
+      <div class="comparison-item diagnostic-card">
         <span>Balance source</span>
-        <strong>${balanceHint}</strong>
-        <small>raw ${accountBalance.rawBalance ?? "--"} / allowance ${accountBalance.rawAllowance ?? "--"}</small>
+        <strong class="compact-value">${balanceHint}</strong>
+        <small class="detail-value">raw ${accountBalance.rawBalance ?? "--"} / allowance ${accountBalance.rawAllowance ?? "--"}</small>
       </div>
-      <div class="comparison-item">
+      <div class="comparison-item diagnostic-card">
         <span>Signer / funder</span>
-        <strong>${shortAddress(accountBalance.signerAddress)} / ${shortAddress(accountBalance.funderAddress)}</strong>
-        <small>type ${accountBalance.signatureType ?? "--"} / ${accountBalance.apiCredsSource || "--"} / ${shortDate(accountBalance.checkedAt)}</small>
+        <strong class="compact-value">${shortAddress(accountBalance.signerAddress)} / ${shortAddress(accountBalance.funderAddress)}</strong>
+        <small class="detail-value">type ${accountBalance.signatureType ?? "--"} / ${accountBalance.apiCredsSource || "--"} / ${shortDate(accountBalance.checkedAt)}</small>
       </div>
     `;
   }
