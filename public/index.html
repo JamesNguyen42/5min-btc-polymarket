@@ -104,6 +104,25 @@
             <button id="startPaperButton" class="secondary-button" type="button">Start Kalshi live</button>
             <button id="stopPaperButton" class="danger-button" type="button">Stop Kalshi</button>
           </div>
+
+          <div class="table-wrap transaction-window">
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Market</th>
+                  <th>Side</th>
+                  <th>Status</th>
+                  <th>PnL</th>
+                </tr>
+              </thead>
+              <tbody id="liveTradeRows">
+                <tr>
+                  <td colspan="5" class="empty">No Kalshi worker trades yet.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </section>
 
         <section class="control-panel" aria-label="Polymarket live trading controls">
@@ -182,6 +201,25 @@
           </div>
 
           <div id="polymarketPanel" class="comparison-panel" hidden></div>
+
+          <div class="table-wrap transaction-window">
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Market</th>
+                  <th>Side</th>
+                  <th>Status</th>
+                  <th>PnL</th>
+                </tr>
+              </thead>
+              <tbody id="polymarketTradeRows">
+                <tr>
+                  <td colspan="5" class="empty">No Polymarket worker trades yet.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </section>
       </section>
 

@@ -412,7 +412,7 @@ function renderLiveTrades(items) {
   liveTradeRows.innerHTML = items
     .map((trade) => {
       const value = Number(trade.pnl_usd || 0);
-      const resultClass = value >= 0 ? "win" : "lose";
+      const resultClass = value > 0 ? "win" : value < 0 ? "lose" : "neutral-cell";
       return `
         <tr>
           <td>${shortDate(trade.ts)}</td>
@@ -436,7 +436,7 @@ function renderCompareTrades(items) {
   compareTradeRows.innerHTML = items
     .map((trade) => {
       const value = Number(trade.pnl_usd || 0);
-      const resultClass = value >= 0 ? "win" : "lose";
+      const resultClass = value > 0 ? "win" : value < 0 ? "lose" : "neutral-cell";
       return `
         <tr>
           <td>${shortDate(trade.ts)}</td>
@@ -510,7 +510,7 @@ function renderPolymarketTrades(items) {
   polymarketTradeRows.innerHTML = items
     .map((trade) => {
       const value = Number(trade.pnl_usd || 0);
-      const resultClass = value >= 0 ? "win" : "lose";
+      const resultClass = value > 0 ? "win" : value < 0 ? "lose" : "neutral-cell";
       return `
         <tr>
           <td>${shortDate(trade.ts)}</td>
@@ -534,7 +534,7 @@ function renderPolymarketCompareTrades(items) {
   polyCompareTradeRows.innerHTML = items
     .map((trade) => {
       const value = Number(trade.pnl_usd || 0);
-      const resultClass = value >= 0 ? "win" : "lose";
+      const resultClass = value > 0 ? "win" : value < 0 ? "lose" : "neutral-cell";
       return `
         <tr>
           <td>${shortDate(trade.ts)}</td>
