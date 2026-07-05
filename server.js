@@ -49,6 +49,7 @@ const POLYMARKET_CLOB_BASE_URL = (process.env.POLYMARKET_CLOB_BASE_URL || "https
 const KALSHI_LIVE_MAX_PRICE_SLIPPAGE = Math.max(0, envNumber("KALSHI_LIVE_MAX_PRICE_SLIPPAGE", 0.03));
 const KALSHI_TAKER_FEE_RATE = Math.max(0, envNumber("KALSHI_TAKER_FEE_RATE", 0.07));
 const KALSHI_LIVE_CASH_BUFFER_USD = Math.max(0, envNumber("KALSHI_LIVE_CASH_BUFFER_USD", 0.25));
+const KALSHI_ORDERBOOK_DEPTH = Math.round(asNumber(process.env.KALSHI_ORDERBOOK_DEPTH, 100, 1, 100));
 const POLYMARKET_LIVE_MAX_PRICE_SLIPPAGE = Math.max(0, envNumber("POLYMARKET_LIVE_MAX_PRICE_SLIPPAGE", 0.03));
 const ACCOUNT_BALANCE_CACHE_MS = Math.max(5000, Number(process.env.ACCOUNT_BALANCE_CACHE_MS || 30000));
 const FRONTEND_ORIGINS = String(process.env.FRONTEND_ORIGIN || "")
@@ -856,7 +857,7 @@ function todayPaperEntryCount() {
   const today = utcDay();
   return tradingState.recentTrades.filter(
     (trade) =>
-      ["paper_entry", "kalshi_live_entry", "kalshi_live_order_no_fill", "kalshi_live_order_error"].includes(trade.kind) &&
+      ["paper_entry", "kalshi_live_entry", "kalshi_live_order_no_fill", "kalshi_live_order_no_liquidity", "kalshi_live_order_error"].includes(trade.kind) &&
       String(trade.ts || "").startsWith(today),
   ).length;
 }
@@ -953,15 +954,94 @@ function kalshiLiveOrderBudget(signal, availableCash) {
   return Math.min(target, fallback, spendableCash);
 }
 
+async function fetchKalshiOrderbook(ticker) {
+  const key = String(ticker || "").trim();
+  if (!key) throw new Error("Kalshi market ticker is required for orderbook lookup");
+  const qs = new URLSearchParams({ depth: String(KALSHI_ORDERBOOK_DEPTH) });
+  return kalshiPublicRequest(`/markets/${encodeURIComponent(key)}/orderbook?${qs.toString()}`);
+}
+
+function kalshiBookLevels(orderbook, side) {
+  const fp = orderbook?.orderbook_fp || {};
+  const legacy = orderbook?.orderbook || {};
+  const rows =
+    side === "yes"
+      ? fp.yes_dollars || legacy.yes_dollars || legacy.yes || []
+      : fp.no_dollars || legacy.no_dollars || legacy.no || [];
+  return (Array.isArray(rows) ? rows : [])
+    .map((row) => {
+      const priceRaw = Array.isArray(row) ? row[0] : row?.price_dollars ?? row?.price;
+      const countRaw = Array.isArray(row) ? row[1] : row?.count_fp ?? row?.count;
+      let levelPrice = Number(priceRaw);
+      if (Number.isFinite(levelPrice) && levelPrice > 1) levelPrice /= 100;
+      const count = Number(countRaw);
+      return {
+        price: levelPrice,
+        count,
+      };
+    })
+    .filter((level) => Number.isFinite(level.price) && Number.isFinite(level.count) && level.price > 0 && level.count > 0);
+}
+
+function kalshiLimitEconomicPrice(order) {
+  const yesSidePrice = Number(order?.price);
+  if (!Number.isFinite(yesSidePrice) || yesSidePrice <= 0 || yesSidePrice >= 1) return null;
+  return order.resolvedSide === "no" ? Number((1 - yesSidePrice).toFixed(6)) : yesSidePrice;
+}
+
+function kalshiRestingContractsForOrder(orderbook, order) {
+  const yesSidePrice = Number(order?.price);
+  if (!Number.isFinite(yesSidePrice)) return 0;
+  const levels = order.resolvedSide === "yes" ? kalshiBookLevels(orderbook, "no") : kalshiBookLevels(orderbook, "yes");
+  const minBid = order.resolvedSide === "yes" ? 1 - yesSidePrice : yesSidePrice;
+  const count = levels
+    .filter((level) => level.price + 1e-9 >= minBid)
+    .reduce((sum, level) => sum + level.count, 0);
+  return Math.floor(count);
+}
+
+function createKalshiLiquidityError({ ticker, requestedContracts, availableContracts, order, orderbook }) {
+  const limitEconomicPrice = kalshiLimitEconomicPrice(order);
+  const message = `Kalshi FOK skipped: requested ${requestedContracts} ${order.resolvedSide.toUpperCase()} contracts but only ${availableContracts} were resting within limit ${
+    limitEconomicPrice === null ? "--" : limitEconomicPrice.toFixed(4)
+  } on ${ticker}`;
+  const err = new Error(message);
+  err.code = "kalshi_insufficient_resting_volume";
+  err.availableContracts = availableContracts;
+  err.requestedContracts = requestedContracts;
+  err.orderbook = orderbook;
+  err.limitEconomicPrice = limitEconomicPrice;
+  return err;
+}
+
+function isKalshiLiquidityError(err) {
+  const apiCode = err?.body?.error?.code || err?.api_error?.error?.code;
+  return err?.code === "kalshi_insufficient_resting_volume" || apiCode === "fill_or_kill_insufficient_resting_volume";
+}
+
 async function placeKalshiLiveOrder({ ticker, signalSide, cost, marketPrice }) {
   const price = Number(marketPrice);
   if (!ticker) throw new Error("Kalshi market ticker is required");
   if (!Number.isFinite(price) || price <= 0 || price >= 1) throw new Error("Kalshi live price must be between 0 and 1");
-  const count = kalshiMaxContractsForBudget(cost, price);
-  const estimatedFee = kalshiEstimatedTakerFee(count, price);
-  const estimatedTotalCost = Number((count * price + estimatedFee).toFixed(6));
-  if (count < 1) throw new Error(`Kalshi stake is too small for one contract plus estimated fees at ${price.toFixed(4)}`);
   const order = kalshiOrderSideAndPrice(signalSide, price);
+  const limitEconomicPrice = kalshiLimitEconomicPrice(order);
+  if (limitEconomicPrice === null) throw new Error("Kalshi live limit price must be between 0 and 1");
+  const budgetCount = kalshiMaxContractsForBudget(cost, limitEconomicPrice);
+  if (budgetCount < 1) throw new Error(`Kalshi stake is too small for one contract plus estimated fees at ${limitEconomicPrice.toFixed(4)}`);
+  const orderbook = await fetchKalshiOrderbook(ticker);
+  const availableContracts = kalshiRestingContractsForOrder(orderbook, order);
+  const count = Math.min(budgetCount, availableContracts);
+  const estimatedFee = kalshiEstimatedTakerFee(count, limitEconomicPrice);
+  const estimatedTotalCost = Number((count * limitEconomicPrice + estimatedFee).toFixed(6));
+  if (count < 1) {
+    throw createKalshiLiquidityError({
+      ticker,
+      requestedContracts: budgetCount,
+      availableContracts,
+      order,
+      orderbook,
+    });
+  }
   const body = {
     ticker,
     client_order_id: crypto.randomUUID(),
@@ -980,6 +1060,9 @@ async function placeKalshiLiveOrder({ ticker, signalSide, cost, marketPrice }) {
     response = await kalshiRequest("POST", "/portfolio/events/orders", body);
   } catch (err) {
     err.requestBody = body;
+    err.requestedContracts = count;
+    err.availableContracts = availableContracts;
+    err.limitEconomicPrice = limitEconomicPrice;
     err.estimatedFee = estimatedFee;
     err.estimatedTotalCost = estimatedTotalCost;
     throw err;
@@ -989,6 +1072,8 @@ async function placeKalshiLiveOrder({ ticker, signalSide, cost, marketPrice }) {
     request: body,
     requestedContracts: count,
     effectivePrice: price,
+    limitEconomicPrice,
+    restingContractsAvailable: availableContracts,
     estimatedFee,
     estimatedTotalCost,
     resolvedSide: order.resolvedSide,
@@ -1707,7 +1792,7 @@ async function pollPaperWorker() {
       const marketId = snapshot.ticker;
       const alreadyTradedMarket = tradingState.recentTrades.some(
         (trade) =>
-          ["kalshi_live_entry", "kalshi_live_order_no_fill", "kalshi_live_order_error"].includes(trade.kind) &&
+          ["kalshi_live_entry", "kalshi_live_order_no_fill", "kalshi_live_order_no_liquidity", "kalshi_live_order_error"].includes(trade.kind) &&
           trade.market === marketId,
       );
       if (alreadyTradedMarket) {
@@ -1733,19 +1818,22 @@ async function pollPaperWorker() {
       } catch (err) {
         const message = err.message || String(err);
         tradingState.lastError = message;
-        tradingState.note = `Kalshi live order error: ${message}`;
+        const liquidityError = isKalshiLiquidityError(err);
+        tradingState.note = liquidityError ? `Kalshi live skipped for insufficient resting volume: ${message}` : `Kalshi live order error: ${message}`;
         addTrade({
           ts: new Date().toISOString(),
-          kind: "kalshi_live_order_error",
+          kind: liquidityError ? "kalshi_live_order_no_liquidity" : "kalshi_live_order_error",
           market: marketId,
           strategy: primaryStrategy.toUpperCase(),
           side: signal.side,
-          status: "live_order_error",
+          status: liquidityError ? "live_order_no_liquidity" : "live_order_error",
           pnl_usd: 0,
           entry_price: price,
           cost_usd: Number(cost.toFixed(6)),
           request: err.requestBody || null,
           api_error: err.body || null,
+          requested_contracts: dollars(err.requestedContracts, null),
+          available_contracts: dollars(err.availableContracts, null),
           estimated_fee_usd: dollars(err.estimatedFee, null),
           estimated_total_cost_usd: dollars(err.estimatedTotalCost, null),
           error: message,
