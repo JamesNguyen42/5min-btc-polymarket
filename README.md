@@ -16,8 +16,8 @@ This skill is aligned with a short-horizon momentum strategy:
 
 This is a momentum-following approach, not a reversal strategy.
 
-## V2 Strategy and Comparison
-This branch adds an explicit V2 simulator strategy and keeps V1 intact for
+## V3 Strategy and Comparison
+This branch adds an explicit V3 simulator strategy and keeps V1/V2 intact for
 side-by-side comparison.
 
 - **V1 baseline**: fixed entry timing, fixed BTC move threshold, fixed stake,
@@ -25,8 +25,11 @@ side-by-side comparison.
 - **V2 adaptive momentum**: dynamic BTC move threshold, pullback/reversal
   checks, larger daily opportunity budget, and confidence-based sizing capped by
   equity risk and a max stake multiplier.
+- **V3 regime-aware momentum**: volatility-adjusted trigger, trend quality and
+  close-location checks, broader opportunity budget, and stronger confidence
+  sizing with tighter reversal rejection.
 
-Run both strategies on the same BTC candles:
+Run all three strategies on the same BTC candles:
 
 ```bash
 npm run sim:compare
@@ -38,7 +41,7 @@ Or call the simulator directly:
 python scripts/simulate_btc_5m_virtual.py --days 7 --interval-minutes 15 --profile conservative --compare
 ```
 
-Run the current-market V1/V2 signal from the terminal:
+Run the current-market V1/V2/V3 signal from the terminal:
 
 ```bash
 npm run sim:live
@@ -50,8 +53,8 @@ Live direct call:
 python scripts/simulate_btc_5m_virtual.py --live --compare --interval-minutes 15 --profile conservative
 ```
 
-The dashboard defaults to **Compare V1 vs V2** and shows V2 as the primary
-result while displaying the V1/V2 delta. The comparison is still a virtual
+The dashboard defaults to **Compare V1/V2/V3** and shows V3 as the primary
+result while displaying V3 deltas. The comparison is still a virtual
 backtest: it does not replay historical Kalshi order books, spreads, fees,
 liquidity, fill probability, or exact CF Benchmarks settlement values.
 
@@ -59,11 +62,11 @@ For current-market data, switch the dashboard **Data mode** to **Live snapshot**
 Live mode uses the latest completed Coinbase BTC-USD 1-minute candle inside the
 active interval and, for 15-minute markets, enriches the signal with the current
 open Kalshi `KXBTC15M` YES/NO ask prices when the public market API is
-available. It reports the current V1/V2 action, side, BTC move, seconds left,
+available. It reports the current V1/V2/V3 action, side, BTC move, seconds left,
 and live ask price, but it does not show PnL because the market has not settled.
 
-The Trading page also has **Start V1/V2 live compare**. That starts a backend
-worker that runs both strategies against the same live feed and records virtual
+The Trading page also has **Start V1/V2/V3 live compare**. That starts a backend
+worker that runs all three strategies against the same live feed and records virtual
 paper entries/settlements side by side. It does not post real orders. Kalshi
 market data uses the configured `KALSHI_ENV`; set `KALSHI_ENV=prod` when you
 want the worker pointed at production Kalshi data.
@@ -187,6 +190,12 @@ Run the V2 strategy only:
 
 ```bash
 python scripts/simulate_btc_5m_virtual.py --days 7 --interval-minutes 15 --profile conservative --strategy v2
+```
+
+Run the V3 strategy only:
+
+```bash
+python scripts/simulate_btc_5m_virtual.py --days 7 --interval-minutes 15 --profile conservative --strategy v3
 ```
 
 Save a report and full trade ledger:

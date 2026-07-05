@@ -7,7 +7,7 @@
     "dev": "node server.js",
     "start": "node server.js",
     "sim": "python scripts/simulate_btc_5m_virtual.py --days 7 --interval-minutes 15 --profile conservative --out runtime/kalshi_btc15m_virtual_backtest.json --csv runtime/kalshi_btc15m_virtual_backtest.csv",
-    "sim:compare": "python scripts/simulate_btc_5m_virtual.py --days 7 --interval-minutes 15 --profile conservative --compare --out runtime/kalshi_btc15m_v1_v2_compare.json --csv runtime/kalshi_btc15m_v1_v2_compare.csv",
+    "sim:compare": "python scripts/simulate_btc_5m_virtual.py --days 7 --interval-minutes 15 --profile conservative --compare --out runtime/kalshi_btc15m_v1_v2_v3_compare.json --csv runtime/kalshi_btc15m_v1_v2_v3_compare.csv",
     "sim:live": "python scripts/simulate_btc_5m_virtual.py --live --compare --interval-minutes 15 --profile conservative"
   }
 }

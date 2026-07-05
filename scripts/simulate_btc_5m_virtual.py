@@ -4,17 +4,22 @@ import csv
 import datetime as dt
 import json
 import math
+import socket
+import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
 
 UTC = dt.timezone.utc
+COINBASE_FETCH_RETRIES = 3
 
 STRATEGY_V1 = "v1"
 STRATEGY_V2 = "v2"
-STRATEGIES = (STRATEGY_V1, STRATEGY_V2)
+STRATEGY_V3 = "v3"
+STRATEGIES = (STRATEGY_V1, STRATEGY_V2, STRATEGY_V3)
 
 STRATEGY_NOTES = {
     STRATEGY_V1: (
@@ -26,6 +31,17 @@ STRATEGY_NOTES = {
         "checks, larger daily opportunity budget, and confidence sizing capped "
         "by equity risk and max stake multiplier."
     ),
+    STRATEGY_V3: (
+        "V3 regime-aware momentum: volatility-adjusted trigger, trend quality "
+        "and close-location checks, broader opportunity budget, and stronger "
+        "confidence sizing with tighter reversal rejection."
+    ),
+}
+
+STRATEGY_LABELS = {
+    STRATEGY_V1: "V1 Baseline Momentum",
+    STRATEGY_V2: "V2 Adaptive Momentum",
+    STRATEGY_V3: "V3 Regime-Aware Momentum",
 }
 
 PROFILES: dict[str, dict[str, Any]] = {
@@ -38,6 +54,9 @@ PROFILES: dict[str, dict[str, Any]] = {
         "v2_max_trades_multiplier": 2.0,
         "v2_max_stake_multiplier": 3.0,
         "v2_equity_risk_pct": 0.12,
+        "v3_max_trades_multiplier": 3.0,
+        "v3_max_stake_multiplier": 4.0,
+        "v3_equity_risk_pct": 0.16,
     },
     "aggressive": {
         "threshold_price": 0.70,
@@ -48,6 +67,9 @@ PROFILES: dict[str, dict[str, Any]] = {
         "v2_max_trades_multiplier": 2.25,
         "v2_max_stake_multiplier": 4.0,
         "v2_equity_risk_pct": 0.18,
+        "v3_max_trades_multiplier": 3.2,
+        "v3_max_stake_multiplier": 5.0,
+        "v3_equity_risk_pct": 0.24,
     },
 }
 
@@ -80,6 +102,24 @@ def default_runtime_dir() -> Path:
     return Path(__file__).resolve().parents[1] / "runtime"
 
 
+def fetch_json_with_retries(req: urllib.request.Request, timeout: int = 20) -> Any:
+    last_error: Exception | None = None
+    for attempt in range(1, COINBASE_FETCH_RETRIES + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError, socket.gaierror, json.JSONDecodeError) as err:
+            last_error = err
+            if attempt < COINBASE_FETCH_RETRIES:
+                time.sleep(0.35 * attempt)
+                continue
+    message = str(last_error) if last_error else "unknown network error"
+    raise RuntimeError(
+        "Could not fetch Coinbase BTC-USD candles. Check your internet/DNS connection and retry. "
+        f"Last error: {message}"
+    )
+
+
 def fetch_coinbase_1m(start: dt.datetime, end: dt.datetime) -> list[dict[str, float]]:
     """Fetch real BTC-USD 1-minute candles from Coinbase Exchange.
 
@@ -101,8 +141,7 @@ def fetch_coinbase_1m(start: dt.datetime, end: dt.datetime) -> list[dict[str, fl
             + urllib.parse.urlencode(params)
         )
         req = urllib.request.Request(url, headers={"User-Agent": "btc-updown-virtual-simulator/2.0"})
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            rows = json.loads(resp.read().decode("utf-8"))
+        rows = fetch_json_with_retries(req)
         if not isinstance(rows, list):
             raise RuntimeError(f"unexpected Coinbase response: {rows!r}")
         for row in rows:
@@ -177,6 +216,11 @@ def build_market_snapshot(
     low_so_far = min((float(c["low"]) for c in visible), default=entry_btc)
     previous_close = closes[-2] if len(closes) >= 2 else interval_open
     lookback_close = closes[-4] if len(closes) >= 4 else closes[0] if closes else interval_open
+    signed_close_moves = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
+    same_direction_moves = sum(1 for delta in signed_close_moves if sign(delta) == direction)
+    trend_quality = same_direction_moves / len(signed_close_moves) if signed_close_moves else 0.0
+    visible_range = max(0.0, high_so_far - low_so_far)
+    close_location = (entry_btc - low_so_far) / visible_range if visible_range > 0 else 0.5
 
     return {
         "bucket_start": bucket_start,
@@ -193,6 +237,8 @@ def build_market_snapshot(
         "recent_3m_move": entry_btc - lookback_close,
         "high_so_far": high_so_far,
         "low_so_far": low_so_far,
+        "trend_quality": trend_quality,
+        "close_location": close_location,
     }
 
 
@@ -283,6 +329,122 @@ def v2_decision(snapshot: dict[str, Any], min_btc_move_usd: float) -> dict[str, 
     }
 
 
+def v3_decision(snapshot: dict[str, Any], min_btc_move_usd: float) -> dict[str, Any]:
+    move = float(snapshot["move_at_entry"])
+    direction = int(snapshot["direction"])
+    move_abs = abs(move)
+    if direction == 0:
+        return {"side": None, "skip_reason": "v3_no_direction"}
+
+    avg_abs_1m_move = float(snapshot["avg_abs_1m_move"])
+    recent_1m_signed = float(snapshot["recent_1m_move"]) * direction
+    recent_3m_signed = float(snapshot["recent_3m_move"]) * direction
+    trend_quality = float(snapshot.get("trend_quality") or 0.0)
+    close_location = float(snapshot.get("close_location") or 0.5)
+    direction_close_location = close_location if direction > 0 else 1.0 - close_location
+    dynamic_min_move = max(min_btc_move_usd * 0.62, avg_abs_1m_move * 1.08, 18.0)
+
+    if move_abs < dynamic_min_move:
+        return {
+            "side": None,
+            "skip_reason": "v3_btc_move_below_dynamic_threshold",
+            "dynamic_min_btc_move_usd": round(dynamic_min_move, 4),
+        }
+
+    interval_open = float(snapshot["interval_open"])
+    entry_btc = float(snapshot["entry_btc"])
+    if direction > 0:
+        favorable_excursion = max(0.0, float(snapshot["high_so_far"]) - interval_open)
+        pullback = max(0.0, float(snapshot["high_so_far"]) - entry_btc)
+    else:
+        favorable_excursion = max(0.0, interval_open - float(snapshot["low_so_far"]))
+        pullback = max(0.0, entry_btc - float(snapshot["low_so_far"]))
+    pullback_ratio = pullback / favorable_excursion if favorable_excursion > 0 else 0.0
+
+    if trend_quality < 0.42 and move_abs < min_btc_move_usd * 1.25:
+        return {
+            "side": None,
+            "skip_reason": "v3_low_trend_quality",
+            "dynamic_min_btc_move_usd": round(dynamic_min_move, 4),
+            "pullback_ratio": round(pullback_ratio, 4),
+            "trend_quality": round(trend_quality, 4),
+        }
+    if direction_close_location < 0.50 and move_abs < min_btc_move_usd * 1.45:
+        return {
+            "side": None,
+            "skip_reason": "v3_poor_close_location",
+            "dynamic_min_btc_move_usd": round(dynamic_min_move, 4),
+            "pullback_ratio": round(pullback_ratio, 4),
+            "trend_quality": round(trend_quality, 4),
+        }
+    if pullback_ratio > 0.50 and move_abs < min_btc_move_usd * 1.45:
+        return {
+            "side": None,
+            "skip_reason": "v3_pullback_too_deep",
+            "dynamic_min_btc_move_usd": round(dynamic_min_move, 4),
+            "pullback_ratio": round(pullback_ratio, 4),
+            "trend_quality": round(trend_quality, 4),
+        }
+    if recent_3m_signed < -max(14.0, move_abs * 0.15):
+        return {
+            "side": None,
+            "skip_reason": "v3_recent_reversal",
+            "dynamic_min_btc_move_usd": round(dynamic_min_move, 4),
+            "pullback_ratio": round(pullback_ratio, 4),
+            "trend_quality": round(trend_quality, 4),
+        }
+    if recent_1m_signed < -max(12.0, avg_abs_1m_move * 0.75) and move_abs < min_btc_move_usd * 1.55:
+        return {
+            "side": None,
+            "skip_reason": "v3_last_minute_reversal",
+            "dynamic_min_btc_move_usd": round(dynamic_min_move, 4),
+            "pullback_ratio": round(pullback_ratio, 4),
+            "trend_quality": round(trend_quality, 4),
+        }
+
+    move_score = move_abs / max(dynamic_min_move, 1.0)
+    continuation_score = max(0.0, recent_3m_signed) / max(dynamic_min_move, 1.0)
+    pullback_score = max(0.0, 1.0 - pullback_ratio)
+    location_score = clamp(direction_close_location, 0.0, 1.0)
+    confidence = clamp(
+        0.55
+        + 0.72 * move_score
+        + 0.30 * continuation_score
+        + 0.34 * pullback_score
+        + 0.30 * trend_quality
+        + 0.22 * location_score,
+        1.05,
+        4.1,
+    )
+    stake_multiplier = clamp(0.85 + (confidence - 1.0) * 0.90, 1.0, 4.0)
+
+    return {
+        "side": "UP" if direction > 0 else "DOWN",
+        "skip_reason": None,
+        "entry_reason": "regime_aware_momentum_follow_through",
+        "confidence": round(confidence, 4),
+        "stake_multiplier": round(stake_multiplier, 4),
+        "dynamic_min_btc_move_usd": round(dynamic_min_move, 4),
+        "pullback_ratio": round(pullback_ratio, 4),
+        "trend_quality": round(trend_quality, 4),
+        "close_location": round(direction_close_location, 4),
+        "recent_1m_signed_usd": round(recent_1m_signed, 4),
+        "recent_3m_signed_usd": round(recent_3m_signed, 4),
+    }
+
+
+def strategy_label(strategy: str) -> str:
+    return STRATEGY_LABELS.get(strategy, strategy.upper())
+
+
+def strategy_decision(strategy: str, snapshot: dict[str, Any], min_btc_move_usd: float) -> dict[str, Any]:
+    if strategy == STRATEGY_V3:
+        return v3_decision(snapshot, min_btc_move_usd)
+    if strategy == STRATEGY_V2:
+        return v2_decision(snapshot, min_btc_move_usd)
+    return v1_decision(snapshot, min_btc_move_usd)
+
+
 def max_drawdown_pct(starting_cash: float, equity_curve: list[dict[str, Any]]) -> float:
     peak = starting_cash
     max_drawdown = 0.0
@@ -316,6 +478,21 @@ def resolve_params(args: argparse.Namespace) -> dict[str, Any]:
         if args.v2_equity_risk_pct is not None
         else profile["v2_equity_risk_pct"]
     )
+    v3_max_trades_multiplier = (
+        args.v3_max_trades_multiplier
+        if args.v3_max_trades_multiplier is not None
+        else profile["v3_max_trades_multiplier"]
+    )
+    v3_max_stake_multiplier = (
+        args.v3_max_stake_multiplier
+        if args.v3_max_stake_multiplier is not None
+        else profile["v3_max_stake_multiplier"]
+    )
+    v3_equity_risk_pct = (
+        args.v3_equity_risk_pct
+        if args.v3_equity_risk_pct is not None
+        else profile["v3_equity_risk_pct"]
+    )
 
     return {
         "threshold_price": float(threshold_price),
@@ -326,6 +503,9 @@ def resolve_params(args: argparse.Namespace) -> dict[str, Any]:
         "v2_max_trades_multiplier": float(v2_max_trades_multiplier),
         "v2_max_stake_multiplier": float(v2_max_stake_multiplier),
         "v2_equity_risk_pct": float(v2_equity_risk_pct),
+        "v3_max_trades_multiplier": float(v3_max_trades_multiplier),
+        "v3_max_stake_multiplier": float(v3_max_stake_multiplier),
+        "v3_equity_risk_pct": float(v3_equity_risk_pct),
     }
 
 
@@ -362,7 +542,9 @@ def simulate_strategy(
     entry_seconds_left = params["entry_seconds_left"]
     max_trades = params["max_trades"]
 
-    if strategy == STRATEGY_V2:
+    if strategy == STRATEGY_V3:
+        effective_max_trades = max(1, int(math.ceil(max_trades * params["v3_max_trades_multiplier"])))
+    elif strategy == STRATEGY_V2:
         effective_max_trades = max(1, int(math.ceil(max_trades * params["v2_max_trades_multiplier"])))
     else:
         effective_max_trades = max_trades
@@ -392,16 +574,18 @@ def simulate_strategy(
             skipped["missing_candle"] = skipped.get("missing_candle", 0) + 1
             continue
 
-        if strategy == STRATEGY_V2:
-            decision = v2_decision(snapshot, min_btc_move_usd)
-        else:
-            decision = v1_decision(snapshot, min_btc_move_usd)
+        decision = strategy_decision(strategy, snapshot, min_btc_move_usd)
         if not decision.get("side"):
             reason = str(decision.get("skip_reason") or "strategy_skip")
             skipped[reason] = skipped.get(reason, 0) + 1
             continue
 
-        if strategy == STRATEGY_V2:
+        if strategy == STRATEGY_V3:
+            multiplier_cap = max(1.0, params["v3_max_stake_multiplier"])
+            risk_cap = max(0.01, cash * clamp(params["v3_equity_risk_pct"], 0.001, 1.0))
+            target_stake = stake_usd * clamp(float(decision["stake_multiplier"]), 1.0, multiplier_cap)
+            cost = min(target_stake, risk_cap, cash)
+        elif strategy == STRATEGY_V2:
             multiplier_cap = max(1.0, params["v2_max_stake_multiplier"])
             risk_cap = max(0.01, cash * clamp(params["v2_equity_risk_pct"], 0.001, 1.0))
             target_stake = stake_usd * clamp(float(decision["stake_multiplier"]), 1.0, multiplier_cap)
@@ -445,6 +629,8 @@ def simulate_strategy(
             "confidence": decision.get("confidence"),
             "dynamic_min_btc_move_usd": decision.get("dynamic_min_btc_move_usd"),
             "pullback_ratio": decision.get("pullback_ratio"),
+            "trend_quality": decision.get("trend_quality"),
+            "close_location": decision.get("close_location"),
             "stake_multiplier": decision.get("stake_multiplier"),
             "stake_usd": round(cost, 6),
             "shares": round(shares, 6),
@@ -467,7 +653,7 @@ def simulate_strategy(
         "mode": "virtual_backtest",
         "strategy": {
             "id": strategy,
-            "label": "V2 Adaptive Momentum" if strategy == STRATEGY_V2 else "V1 Baseline Momentum",
+            "label": strategy_label(strategy),
             "note": STRATEGY_NOTES[strategy],
         },
         "data_source": "Coinbase Exchange BTC-USD 1m candles",
@@ -494,6 +680,9 @@ def simulate_strategy(
             "v2_max_trades_multiplier": params["v2_max_trades_multiplier"],
             "v2_max_stake_multiplier": params["v2_max_stake_multiplier"],
             "v2_equity_risk_pct": params["v2_equity_risk_pct"],
+            "v3_max_trades_multiplier": params["v3_max_trades_multiplier"],
+            "v3_max_stake_multiplier": params["v3_max_stake_multiplier"],
+            "v3_equity_risk_pct": params["v3_equity_risk_pct"],
         },
         "summary": {
             "markets_replayed": max(0, (sim_end_ts - sim_start_ts) // interval_sec),
@@ -528,18 +717,34 @@ def build_comparison_report(
     sim_end_ts: int,
     data_elapsed: float,
 ) -> dict[str, Any]:
-    v1 = reports[STRATEGY_V1]
-    v2 = reports[STRATEGY_V2]
-    v1_summary = v1["summary"]
-    v2_summary = v2["summary"]
-    pnl_delta = float(v2_summary["total_pnl_usd"]) - float(v1_summary["total_pnl_usd"])
-    ending_delta = float(v2_summary["ending_cash"]) - float(v1_summary["ending_cash"])
-    return_delta = float(v2_summary["return_pct"] or 0.0) - float(v1_summary["return_pct"] or 0.0)
-    win_rate_delta = (
-        float(v2_summary["win_rate"] or 0.0) - float(v1_summary["win_rate"] or 0.0)
-        if v1_summary["win_rate"] is not None and v2_summary["win_rate"] is not None
-        else None
-    )
+    baseline = reports[STRATEGY_V1]
+    candidate = reports[STRATEGY_V3] if STRATEGY_V3 in reports else reports[STRATEGY_V2]
+    baseline_summary = baseline["summary"]
+    candidate_summary = candidate["summary"]
+
+    def summary_delta(candidate_id: str, baseline_id: str) -> dict[str, Any]:
+        cand = reports[candidate_id]["summary"]
+        base = reports[baseline_id]["summary"]
+        ending_delta = float(cand["ending_cash"]) - float(base["ending_cash"])
+        pnl_delta = float(cand["total_pnl_usd"]) - float(base["total_pnl_usd"])
+        return_delta = float(cand["return_pct"] or 0.0) - float(base["return_pct"] or 0.0)
+        win_rate_delta = (
+            float(cand["win_rate"] or 0.0) - float(base["win_rate"] or 0.0)
+            if cand["win_rate"] is not None and base["win_rate"] is not None
+            else None
+        )
+        return {
+            "baseline_strategy": baseline_id,
+            "candidate_strategy": candidate_id,
+            "better_strategy": candidate_id if ending_delta > 0 else baseline_id if ending_delta < 0 else "tie",
+            "ending_cash_delta_usd": round(ending_delta, 6),
+            "total_pnl_delta_usd": round(pnl_delta, 6),
+            "return_pct_delta": round(return_delta, 4),
+            "trade_count_delta": int(cand["trades"]) - int(base["trades"]),
+            "win_rate_delta": round(win_rate_delta, 4) if win_rate_delta is not None else None,
+            "avg_stake_delta_usd": round(float(cand["avg_stake_usd"]) - float(base["avg_stake_usd"]), 6),
+            "largest_stake_delta_usd": round(float(cand["largest_stake_usd"]) - float(base["largest_stake_usd"]), 6),
+        }
 
     public_reports: dict[str, dict[str, Any]] = {}
     combined_trades: list[dict[str, Any]] = []
@@ -549,25 +754,33 @@ def build_comparison_report(
         public.pop("_all_trades", None)
         public_reports[strategy] = public
 
-    comparison = {
-        "baseline_strategy": STRATEGY_V1,
-        "candidate_strategy": STRATEGY_V2,
-        "better_strategy": STRATEGY_V2 if ending_delta > 0 else STRATEGY_V1 if ending_delta < 0 else "tie",
-        "ending_cash_delta_usd": round(ending_delta, 6),
-        "total_pnl_delta_usd": round(pnl_delta, 6),
-        "return_pct_delta": round(return_delta, 4),
-        "trade_count_delta": int(v2_summary["trades"]) - int(v1_summary["trades"]),
-        "win_rate_delta": round(win_rate_delta, 4) if win_rate_delta is not None else None,
-        "avg_stake_delta_usd": round(float(v2_summary["avg_stake_usd"]) - float(v1_summary["avg_stake_usd"]), 6),
-        "largest_stake_delta_usd": round(float(v2_summary["largest_stake_usd"]) - float(v1_summary["largest_stake_usd"]), 6),
+    comparison = summary_delta(candidate["strategy"]["id"], STRATEGY_V1)
+    comparison["deltas"] = {
+        "v2_vs_v1": summary_delta(STRATEGY_V2, STRATEGY_V1) if STRATEGY_V2 in reports else None,
+        "v3_vs_v1": summary_delta(STRATEGY_V3, STRATEGY_V1) if STRATEGY_V3 in reports else None,
+        "v3_vs_v2": summary_delta(STRATEGY_V3, STRATEGY_V2) if STRATEGY_V3 in reports and STRATEGY_V2 in reports else None,
     }
+    comparison["ranked_strategies"] = sorted(
+        (
+            {
+                "strategy": strategy,
+                "ending_cash": report["summary"]["ending_cash"],
+                "return_pct": report["summary"]["return_pct"],
+                "trades": report["summary"]["trades"],
+                "max_drawdown_pct": report["summary"]["max_drawdown_pct"],
+            }
+            for strategy, report in reports.items()
+        ),
+        key=lambda row: float(row["ending_cash"]),
+        reverse=True,
+    )
 
     return {
         "mode": "virtual_backtest_comparison",
         "data_source": "Coinbase Exchange BTC-USD 1m candles",
-        "lookahead_note": v1["lookahead_note"],
-        "market_model_note": v1["market_model_note"],
-        "kalshi_note": v1["kalshi_note"],
+        "lookahead_note": baseline["lookahead_note"],
+        "market_model_note": baseline["market_model_note"],
+        "kalshi_note": baseline["kalshi_note"],
         "risk_note": "Backtest improvement is not a promise of live profitability. The model still omits historical exchange order books, fills, fees, and exact Kalshi settlement data.",
         "simulated_present_started_at": iso(sim_start_ts),
         "simulated_present_finished_at": iso(sim_end_ts),
@@ -584,10 +797,10 @@ def build_comparison_report(
             "days": args.days,
         },
         "comparison": comparison,
-        "summary": v2_summary,
+        "summary": candidate_summary,
         "strategies": public_reports,
         "_all_trades": sorted(combined_trades, key=lambda t: (t.get("sim_now_entry") or "", t.get("strategy") or "")),
-        "trades": v2.get("trades", []),
+        "trades": candidate.get("trades", []),
     }
 
 
@@ -630,7 +843,7 @@ def live_signal_for_strategy(
         "mode": "live_signal",
         "strategy": {
             "id": strategy,
-            "label": "V2 Adaptive Momentum" if strategy == STRATEGY_V2 else "V1 Baseline Momentum",
+            "label": strategy_label(strategy),
             "note": STRATEGY_NOTES[strategy],
         },
         "data_source": "Live Coinbase Exchange BTC-USD 1m candles",
@@ -652,6 +865,8 @@ def live_signal_for_strategy(
             "live_min_seconds_left": min_seconds_left,
             "v2_max_stake_multiplier": params["v2_max_stake_multiplier"],
             "v2_equity_risk_pct": params["v2_equity_risk_pct"],
+            "v3_max_stake_multiplier": params["v3_max_stake_multiplier"],
+            "v3_equity_risk_pct": params["v3_equity_risk_pct"],
         },
     }
 
@@ -668,16 +883,18 @@ def live_signal_for_strategy(
         base["trades"] = []
         return base
 
-    decision = v2_decision(snapshot, params["min_btc_move_usd"]) if strategy == STRATEGY_V2 else v1_decision(
-        snapshot,
-        params["min_btc_move_usd"],
-    )
+    decision = strategy_decision(strategy, snapshot, params["min_btc_move_usd"])
 
     side = decision.get("side")
     if side:
         action = str(window["action_if_signal"])
         status = str(window["reason"])
-        if strategy == STRATEGY_V2:
+        if strategy == STRATEGY_V3:
+            multiplier_cap = max(1.0, params["v3_max_stake_multiplier"])
+            risk_cap = max(0.01, float(args.starting_cash) * clamp(params["v3_equity_risk_pct"], 0.001, 1.0))
+            target_stake = params["stake_usd"] * clamp(float(decision["stake_multiplier"]), 1.0, multiplier_cap)
+            suggested_stake = min(target_stake, risk_cap, float(args.starting_cash))
+        elif strategy == STRATEGY_V2:
             multiplier_cap = max(1.0, params["v2_max_stake_multiplier"])
             risk_cap = max(0.01, float(args.starting_cash) * clamp(params["v2_equity_risk_pct"], 0.001, 1.0))
             target_stake = params["stake_usd"] * clamp(float(decision["stake_multiplier"]), 1.0, multiplier_cap)
@@ -701,6 +918,8 @@ def live_signal_for_strategy(
         "confidence": decision.get("confidence"),
         "dynamic_min_btc_move_usd": decision.get("dynamic_min_btc_move_usd"),
         "pullback_ratio": decision.get("pullback_ratio"),
+        "trend_quality": decision.get("trend_quality"),
+        "close_location": decision.get("close_location"),
         "stake_multiplier": decision.get("stake_multiplier"),
         "suggested_stake_usd": round(float(suggested_stake), 6),
         "model_entry_price": round(params["threshold_price"], 4),
@@ -734,10 +953,12 @@ def build_live_comparison_report(
 ) -> dict[str, Any]:
     v1_signal = reports[STRATEGY_V1].get("signal") or {}
     v2_signal = reports[STRATEGY_V2].get("signal") or {}
+    v3_signal = reports[STRATEGY_V3].get("signal") or {}
+    candidate_signal = v3_signal if STRATEGY_V3 in reports else v2_signal
     return {
         "mode": "live_signal_comparison",
         "data_source": "Live Coinbase Exchange BTC-USD 1m candles",
-        "live_note": "Live mode compares current V1 and V2 signals only; no PnL exists until settlement.",
+        "live_note": "Live mode compares current V1, V2, and V3 signals only; no PnL exists until settlement.",
         "risk_note": "A live signal is not financial advice or an order instruction. It omits full historical order-book replay, fees, fill probability, and exact settlement uncertainty.",
         "observed_at": iso(observed_at_ts),
         "latest_candle_at": iso(latest_candle_ts) if latest_candle_ts else None,
@@ -753,18 +974,20 @@ def build_live_comparison_report(
         },
         "comparison": {
             "baseline_strategy": STRATEGY_V1,
-            "candidate_strategy": STRATEGY_V2,
+            "candidate_strategy": STRATEGY_V3 if STRATEGY_V3 in reports else STRATEGY_V2,
             "v1_action": v1_signal.get("action"),
             "v2_action": v2_signal.get("action"),
+            "v3_action": v3_signal.get("action"),
             "v1_side": v1_signal.get("side"),
             "v2_side": v2_signal.get("side"),
-            "actions_match": v1_signal.get("action") == v2_signal.get("action"),
-            "sides_match": v1_signal.get("side") == v2_signal.get("side"),
+            "v3_side": v3_signal.get("side"),
+            "actions_match": len({signal.get("action") for signal in (v1_signal, v2_signal, v3_signal)}) == 1,
+            "sides_match": len({signal.get("side") for signal in (v1_signal, v2_signal, v3_signal)}) == 1,
         },
-        "summary": v2_signal,
-        "signal": v2_signal,
+        "summary": candidate_signal,
+        "signal": candidate_signal,
         "strategies": reports,
-        "trades": reports[STRATEGY_V2].get("trades", []),
+        "trades": reports[STRATEGY_V3].get("trades", []) if STRATEGY_V3 in reports else reports[STRATEGY_V2].get("trades", []),
     }
 
 
@@ -891,7 +1114,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Fast virtual-money replay for BTC Up/Down strategy.")
     ap.add_argument("--profile", choices=sorted(PROFILES), default="conservative")
     ap.add_argument("--strategy", choices=STRATEGIES, default=STRATEGY_V1, help="Strategy to run when --compare is omitted.")
-    ap.add_argument("--compare", action="store_true", help="Run V1 and V2 on the same candles and report the delta.")
+    ap.add_argument("--compare", action="store_true", help="Run V1, V2, and V3 on the same candles and report the deltas.")
     ap.add_argument("--live", action="store_true", help="Use live current BTC candles and return an unsettled signal snapshot.")
     ap.add_argument("--interval-minutes", type=int, choices=[5, 15], default=15, help="Simulated BTC Up/Down market interval.")
     ap.add_argument("--days", type=float, default=7.0, help="Lookback length when --start is omitted.")
@@ -906,6 +1129,9 @@ def main() -> int:
     ap.add_argument("--v2-max-trades-multiplier", type=float, help="V2 daily trade cap multiplier over --max-trades.")
     ap.add_argument("--v2-max-stake-multiplier", type=float, help="V2 maximum stake multiplier over --stake-usd.")
     ap.add_argument("--v2-equity-risk-pct", type=float, help="V2 maximum stake as a fraction of current virtual equity.")
+    ap.add_argument("--v3-max-trades-multiplier", type=float, help="V3 daily trade cap multiplier over --max-trades.")
+    ap.add_argument("--v3-max-stake-multiplier", type=float, help="V3 maximum stake multiplier over --stake-usd.")
+    ap.add_argument("--v3-equity-risk-pct", type=float, help="V3 maximum stake as a fraction of current virtual equity.")
     ap.add_argument("--live-min-seconds-left", type=int, default=15, help="Live mode skips entries with fewer seconds remaining.")
     ap.add_argument("--preview-trades", type=int, default=25)
     ap.add_argument("--include-trades", action="store_true", help="Print all trades in the JSON report.")
@@ -928,4 +1154,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as err:
+        print(f"ERROR: {err}", file=sys.stderr)
+        raise SystemExit(1)

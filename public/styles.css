@@ -354,7 +354,7 @@ button:focus-visible {
 
 .comparison-panel {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr));
   border-bottom: 1px solid var(--line);
   background: #fbfcfa;
 }
