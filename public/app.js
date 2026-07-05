@@ -55,6 +55,7 @@ const polymarketEquity = document.querySelector("#polymarketEquity");
 const polymarketPnl = document.querySelector("#polymarketPnl");
 const polymarketReturn = document.querySelector("#polymarketReturn");
 const polymarketMode = document.querySelector("#polymarketMode");
+const polymarketLiveOddsPanel = document.querySelector("#polymarketLiveOddsPanel");
 const polymarketPanel = document.querySelector("#polymarketPanel");
 const polymarketTradeRows = document.querySelector("#polymarketTradeRows");
 const polyCompareStatus = document.querySelector("#polyCompareStatus");
@@ -620,6 +621,24 @@ function renderKalshiLiveOdds(state) {
   });
 }
 
+function renderPolymarketLiveOdds(state) {
+  if (!polymarketLiveOddsPanel) return;
+  const market = state?.liveMarket || null;
+  const active = state?.workerStatus === "active";
+  if (!active || !market) {
+    polymarketLiveOddsPanel.hidden = true;
+    polymarketLiveOddsPanel.innerHTML = "";
+    return;
+  }
+  polymarketLiveOddsPanel.hidden = false;
+  polymarketLiveOddsPanel.innerHTML = oddsCardHtml({
+    label: "End window odds",
+    market,
+    upAsk: market.upAsk,
+    downAsk: market.downAsk,
+  });
+}
+
 function renderPolymarketTrades(items) {
   if (!polymarketTradeRows) return;
   if (!items || items.length === 0) {
@@ -707,6 +726,7 @@ function renderPolymarketStatus(polymarket) {
   if (polymarketPnl) polymarketPnl.textContent = money(primaryAccount.realizedPnl);
   if (polymarketReturn) polymarketReturn.textContent = pct(primaryAccount.returnPct);
   if (polymarketMode) polymarketMode.textContent = `${state.mode || "paper"} / ${primaryStrategy.toUpperCase()}`;
+  renderPolymarketLiveOdds(state);
 
   if (armPolymarketLiveButton) {
     armPolymarketLiveButton.disabled = liveTradingActive || paperCompareActive;
@@ -771,7 +791,7 @@ function renderPolymarketStatus(polymarket) {
       <small class="detail-value">${signatureTypeScanText(accountBalance.signatureTypeBalances)}</small>
     </div>
   `;
-  const tradingPanelHtml = `${signalCard}${marketCard}${diagnosticCards}`;
+  const tradingPanelHtml = `${signalCard}${diagnosticCards}`;
   const comparePanelHtml = `${paperCards}${signalCard}${marketCard}${diagnosticCards}`;
 
   if (polymarketPanel) {
