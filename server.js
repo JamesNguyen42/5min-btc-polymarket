@@ -24,12 +24,30 @@ const LIVE_COMPARE_PROFILE = process.env.LIVE_COMPARE_PROFILE === "aggressive" ?
 const COMPARE_STRATEGIES = ["v1", "v2", "v3"];
 const DEFAULT_COMPARE_STRATEGIES = parseCompareStrategyList(process.env.LIVE_COMPARE_STRATEGIES || "v1,v3", ["v1", "v3"]);
 const DEFAULT_PRIMARY_STRATEGY = parseCompareStrategyList(process.env.TRADING_PRIMARY_STRATEGY || "v1", ["v1"])[0];
-const LIVE_COMPARE_STARTING_CASH = Math.max(1, Number(process.env.LIVE_COMPARE_STARTING_CASH || 10));
+const DEFAULT_POLYMARKET_STRATEGIES = parseCompareStrategyList(process.env.POLYMARKET_COMPARE_STRATEGIES || "v1", ["v1"]);
+const DEFAULT_POLYMARKET_PRIMARY_STRATEGY = parseCompareStrategyList(
+  process.env.POLYMARKET_PRIMARY_STRATEGY || "v1",
+  ["v1"],
+)[0];
+const LIVE_COMPARE_STARTING_CASH = Math.max(1, envNumber("LIVE_COMPARE_STARTING_CASH", 10));
+const PAPER_STARTING_CASH = Math.max(1, envNumber("PAPER_STARTING_CASH", LIVE_COMPARE_STARTING_CASH));
+const POLYMARKET_STARTING_CASH = Math.max(1, envNumber("POLYMARKET_STARTING_CASH", LIVE_COMPARE_STARTING_CASH));
 const KALSHI_MARKET_CACHE_MS = Math.max(3000, Number(process.env.KALSHI_MARKET_CACHE_MS || 12000));
 const KALSHI_SETTLEMENT_CACHE_MS = Math.max(3000, Number(process.env.KALSHI_SETTLEMENT_CACHE_MS || 30000));
+const POLYMARKET_MARKET_CACHE_MS = Math.max(1000, Number(process.env.POLYMARKET_MARKET_CACHE_MS || 3000));
+const POLYMARKET_SETTLEMENT_CACHE_MS = Math.max(3000, Number(process.env.POLYMARKET_SETTLEMENT_CACHE_MS || 30000));
 const PAPER_ENTRY_SECONDS_LEFT = Math.max(10, Number(process.env.PAPER_ENTRY_SECONDS_LEFT || 120));
 const PAPER_MIN_SECONDS_LEFT = Math.max(5, Number(process.env.PAPER_MIN_SECONDS_LEFT || 30));
 const PAPER_TRIGGER_PRICE = Math.min(0.99, Math.max(0.01, Number(process.env.PAPER_TRIGGER_PRICE || 0.7)));
+const POLYMARKET_POLL_MS = Math.max(3000, Number(process.env.POLYMARKET_POLL_MS || PAPER_POLL_MS));
+const POLYMARKET_ENTRY_SECONDS_LEFT = Math.max(10, Number(process.env.POLYMARKET_ENTRY_SECONDS_LEFT || 120));
+const POLYMARKET_MIN_SECONDS_LEFT = Math.max(5, Number(process.env.POLYMARKET_MIN_SECONDS_LEFT || 20));
+const POLYMARKET_TRIGGER_PRICE = Math.min(0.99, Math.max(0.01, Number(process.env.POLYMARKET_TRIGGER_PRICE || PAPER_TRIGGER_PRICE)));
+const POLYMARKET_BTC5M_SLUG_PREFIX = process.env.POLYMARKET_BTC5M_SLUG_PREFIX || "btc-updown-5m";
+const POLYMARKET_GAMMA_BASE_URL = (process.env.POLYMARKET_GAMMA_BASE_URL || "https://gamma-api.polymarket.com").replace(/\/$/, "");
+const POLYMARKET_CLOB_BASE_URL = (process.env.POLYMARKET_CLOB_BASE_URL || "https://clob.polymarket.com").replace(/\/$/, "");
+const KALSHI_LIVE_MAX_PRICE_SLIPPAGE = Math.max(0, envNumber("KALSHI_LIVE_MAX_PRICE_SLIPPAGE", 0.03));
+const POLYMARKET_LIVE_MAX_PRICE_SLIPPAGE = Math.max(0, envNumber("POLYMARKET_LIVE_MAX_PRICE_SLIPPAGE", 0.03));
 const FRONTEND_ORIGINS = String(process.env.FRONTEND_ORIGIN || "")
   .split(",")
   .map((origin) => origin.trim())
@@ -40,6 +58,13 @@ const currentBtc15mMarketCache = {
   value: null,
 };
 const kalshiMarketByTickerCache = new Map();
+const polymarketBtc5mMarketCache = {
+  expiresAt: 0,
+  promise: null,
+  value: null,
+};
+const polymarketMarketBySlugCache = new Map();
+const polymarketBookByTokenCache = new Map();
 const tradingState = {
   mode: "paper",
   workerStatus: "inactive",
@@ -71,17 +96,22 @@ const tradingState = {
   recentTrades: [],
   activePosition: null,
   liveCompare: createLiveCompareState(),
+  polymarket: createPolymarketState(),
   startedAt: null,
   stoppedAt: null,
   lastPollAt: null,
   lastError: null,
-  note: "Paper worker is inactive. The selected live compare worker has its own status below.",
+  note: "Kalshi live worker is inactive. Select a model, keep fail-safes set, and turn off the kill switch only when ready.",
 };
 const paperWorker = {
   timer: null,
   polling: false,
 };
 const liveCompareWorker = {
+  timer: null,
+  polling: false,
+};
+const polymarketWorker = {
   timer: null,
   polling: false,
 };
@@ -149,6 +179,17 @@ function enabledCompareStrategies(compare = tradingState.liveCompare) {
   return ensurePrimaryStrategyEnabled(compare?.enabledStrategies, compare?.primaryStrategy || tradingState.strategy?.primaryStrategy);
 }
 
+function normalizePolymarketStrategies(value) {
+  const explicitList = Array.isArray(value);
+  return parseCompareStrategyList(value, explicitList ? [] : DEFAULT_POLYMARKET_STRATEGIES, explicitList);
+}
+
+function enabledPolymarketStrategies(state = tradingState.polymarket) {
+  const primary = normalizePrimaryStrategy(state?.primaryStrategy || DEFAULT_POLYMARKET_PRIMARY_STRATEGY);
+  const selected = normalizePolymarketStrategies(state?.enabledStrategies);
+  return selected.includes(primary) ? selected : [primary, ...selected];
+}
+
 function createLiveCompareState() {
   return {
     workerStatus: "inactive",
@@ -174,6 +215,37 @@ function createLiveCompareState() {
   };
 }
 
+function createPolymarketState() {
+  const primaryStrategy = DEFAULT_POLYMARKET_PRIMARY_STRATEGY;
+  const enabledStrategies = enabledPolymarketStrategies({
+    primaryStrategy,
+    enabledStrategies: DEFAULT_POLYMARKET_STRATEGIES,
+  });
+  return {
+    workerStatus: "inactive",
+    profile: LIVE_COMPARE_PROFILE,
+    mode: "paper",
+    liveArmed: false,
+    primaryStrategy,
+    enabledStrategies,
+    marketSlugPrefix: POLYMARKET_BTC5M_SLUG_PREFIX,
+    pollSeconds: POLYMARKET_POLL_MS / 1000,
+    startedAt: null,
+    stoppedAt: null,
+    lastPollAt: null,
+    lastError: null,
+    lastReport: null,
+    liveMarket: null,
+    note: `${compareStrategyLabel(enabledStrategies)} Polymarket 5m worker is inactive. Paper mode uses live Polymarket data.`,
+    strategies: {
+      v1: createCompareAccount("v1"),
+      v2: createCompareAccount("v2"),
+      v3: createCompareAccount("v3"),
+    },
+    recentTrades: [],
+  };
+}
+
 function isPlainObject(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
@@ -184,6 +256,11 @@ function cleanTradeList(value, maxItems) {
 
 function cleanObjectOrNull(value) {
   return isPlainObject(value) ? value : null;
+}
+
+function envNumber(key, fallback) {
+  const value = Number(process.env[key]);
+  return Number.isFinite(value) ? value : fallback;
 }
 
 function mergeNumberFields(target, source, keys) {
@@ -206,6 +283,50 @@ function compareEntriesToday(account) {
   return cleanTradeList(account?.recentTrades, 100).filter(
     (trade) => trade.kind === "compare_entry" && String(trade.ts || "").startsWith(today),
   ).length;
+}
+
+function polymarketEntriesToday(account) {
+  const today = utcDay();
+  return cleanTradeList(account?.recentTrades, 100).filter(
+    (trade) => trade.kind === "polymarket_entry" && String(trade.ts || "").startsWith(today),
+  ).length;
+}
+
+function isEmptyCashState(account) {
+  return (
+    Math.abs(Number(account?.realizedPnl || 0)) < 0.000001 &&
+    !account?.activePosition &&
+    !account?.lastTrade &&
+    cleanTradeList(account?.recentTrades, 100).length === 0
+  );
+}
+
+function resetLegacyFallbackCash(account, configuredStartingCash) {
+  const starting = Number(account?.startingCash || 0);
+  const current = Number(account?.currentEquity || 0);
+  const configured = Number(configuredStartingCash.toFixed(6));
+  if (starting !== 100 || current !== 100 || configured === 100 || !isEmptyCashState(account)) return false;
+  account.startingCash = configured;
+  account.currentEquity = configured;
+  account.returnPct = 0;
+  return true;
+}
+
+function resetLegacyPaperFallbackCash() {
+  const balances = tradingState.balances;
+  const starting = Number(balances.startingCash || 0);
+  const current = Number(balances.currentEquity || 0);
+  const configured = Number(PAPER_STARTING_CASH.toFixed(6));
+  const hasPaperActivity =
+    Math.abs(Number(balances.realizedPnl || 0)) >= 0.000001 ||
+    tradingState.activePosition ||
+    tradingState.lastTrade ||
+    cleanTradeList(tradingState.recentTrades, 100).length > 0;
+  if (starting !== 100 || current !== 100 || configured === 100 || hasPaperActivity) return false;
+  balances.startingCash = configured;
+  balances.currentEquity = configured;
+  balances.returnPct = 0;
+  return true;
 }
 
 function mergeCompareAccountState(strategy, saved) {
@@ -250,6 +371,43 @@ function mergeLiveCompareState(saved) {
   return state;
 }
 
+function mergePolymarketState(saved) {
+  const state = createPolymarketState();
+  if (!isPlainObject(saved)) return state;
+
+  state.workerStatus = saved.workerStatus === "active" ? "active" : "inactive";
+  state.profile = saved.profile === "aggressive" ? "aggressive" : "conservative";
+  state.liveArmed = saved.liveArmed === true && saved.mode === "live";
+  state.mode = state.liveArmed ? "live" : "paper";
+  mergeStringFields(state, saved, [
+    "marketSlugPrefix",
+    "startedAt",
+    "stoppedAt",
+    "lastPollAt",
+    "lastError",
+    "note",
+  ]);
+  state.primaryStrategy = normalizePrimaryStrategy(saved.primaryStrategy || saved.executionStrategy || DEFAULT_POLYMARKET_PRIMARY_STRATEGY);
+  state.enabledStrategies = (() => {
+    const explicit = Array.isArray(saved.enabledStrategies || saved.activeStrategies);
+    const selected = explicit
+      ? parseCompareStrategyList(saved.enabledStrategies || saved.activeStrategies, [], true)
+      : normalizePolymarketStrategies(saved.enabledStrategies || saved.activeStrategies);
+    return selected.includes(state.primaryStrategy) ? selected : [state.primaryStrategy, ...selected];
+  })();
+  mergeNumberFields(state, saved, ["pollSeconds"]);
+  state.lastReport = cleanObjectOrNull(saved.lastReport);
+  state.liveMarket = cleanObjectOrNull(saved.liveMarket);
+  state.recentTrades = cleanTradeList(saved.recentTrades, 100);
+
+  const savedStrategies = isPlainObject(saved.strategies) ? saved.strategies : {};
+  for (const strategy of COMPARE_STRATEGIES) {
+    state.strategies[strategy] = mergeCompareAccountState(strategy, savedStrategies[strategy]);
+    state.strategies[strategy].entriesToday = polymarketEntriesToday(state.strategies[strategy]);
+  }
+  return state;
+}
+
 function mergeTradingState(saved) {
   if (!isPlainObject(saved)) return false;
 
@@ -283,14 +441,18 @@ function mergeTradingState(saved) {
   tradingState.recentTrades = cleanTradeList(saved.recentTrades, 100);
   tradingState.activePosition = cleanObjectOrNull(saved.activePosition);
   tradingState.liveCompare = mergeLiveCompareState(saved.liveCompare);
+  tradingState.polymarket = mergePolymarketState(saved.polymarket);
   tradingState.strategy.primaryStrategy = normalizePrimaryStrategy(
     saved.strategy?.primaryStrategy || saved.primaryStrategy || tradingState.liveCompare.primaryStrategy,
   );
-  tradingState.liveCompare.primaryStrategy = tradingState.strategy.primaryStrategy;
   tradingState.liveCompare.enabledStrategies = ensurePrimaryStrategyEnabled(
     tradingState.liveCompare.enabledStrategies,
-    tradingState.strategy.primaryStrategy,
+    tradingState.liveCompare.primaryStrategy,
   );
+  resetLegacyPaperFallbackCash();
+  for (const strategy of COMPARE_STRATEGIES) {
+    resetLegacyFallbackCash(tradingState.liveCompare.strategies[strategy], LIVE_COMPARE_STARTING_CASH);
+  }
   tradingState.restoredAt = new Date().toISOString();
   updatePaperEquity();
   return true;
@@ -486,14 +648,18 @@ function kalshiAuthHeaders(method, apiPath) {
   };
 }
 
-function kalshiRequest(method, apiPath) {
+function kalshiRequest(method, apiPath, body = null) {
   return new Promise((resolve, reject) => {
     const url = new URL(`${kalshiBaseUrl()}${apiPath}`);
+    const payload = body === null || body === undefined ? null : typeof body === "string" ? body : JSON.stringify(body);
     const req = https.request(
       url,
       {
         method,
-        headers: kalshiAuthHeaders(method, apiPath),
+        headers: {
+          ...kalshiAuthHeaders(method, apiPath),
+          ...(payload ? { "content-type": "application/json", "content-length": Buffer.byteLength(payload) } : {}),
+        },
       },
       (res) => {
         let body = "";
@@ -516,6 +682,7 @@ function kalshiRequest(method, apiPath) {
       },
     );
     req.on("error", reject);
+    if (payload) req.write(payload);
     req.end();
   });
 }
@@ -550,6 +717,56 @@ function kalshiPublicRequest(apiPath) {
   });
 }
 
+function httpsJsonRequest(url, { method = "GET", headers = {}, body = null } = {}) {
+  return new Promise((resolve, reject) => {
+    const parsedUrl = new URL(url);
+    const payload = body === null || body === undefined ? null : typeof body === "string" ? body : JSON.stringify(body);
+    const req = https.request(
+      parsedUrl,
+      {
+        method,
+        headers: {
+          ...(payload ? { "content-type": "application/json", "content-length": Buffer.byteLength(payload) } : {}),
+          ...headers,
+        },
+      },
+      (res) => {
+        let raw = "";
+        res.on("data", (chunk) => {
+          raw += chunk.toString();
+        });
+        res.on("end", () => {
+          let parsed = null;
+          try {
+            parsed = raw ? JSON.parse(raw) : null;
+          } catch {
+            parsed = raw;
+          }
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            const err = new Error(`${parsedUrl.hostname} ${res.statusCode}: ${typeof parsed === "string" ? parsed : JSON.stringify(parsed)}`);
+            err.statusCode = res.statusCode;
+            err.body = parsed;
+            reject(err);
+            return;
+          }
+          resolve(parsed);
+        });
+      },
+    );
+    req.on("error", reject);
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+function polymarketGammaRequest(pathname) {
+  return httpsJsonRequest(`${POLYMARKET_GAMMA_BASE_URL}${pathname}`);
+}
+
+function polymarketClobRequest(pathname) {
+  return httpsJsonRequest(`${POLYMARKET_CLOB_BASE_URL}${pathname}`);
+}
+
 function dollars(value, fallback = null) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
@@ -575,7 +792,9 @@ function updatePaperEquity() {
 
 function todayPaperEntryCount() {
   const today = utcDay();
-  return tradingState.recentTrades.filter((trade) => trade.kind === "paper_entry" && String(trade.ts || "").startsWith(today)).length;
+  return tradingState.recentTrades.filter(
+    (trade) => ["paper_entry", "kalshi_live_entry", "kalshi_live_order_error"].includes(trade.kind) && String(trade.ts || "").startsWith(today),
+  ).length;
 }
 
 function failSafeReason() {
@@ -596,13 +815,95 @@ function addTrade(trade) {
   saveTradingState();
 }
 
+function kalshiLiveCredentialsConfigured() {
+  return Boolean(process.env.KALSHI_API_KEY_ID && kalshiPrivateKeyPem());
+}
+
+function kalshiLiveModeConfiguredError() {
+  if (!kalshiLiveCredentialsConfigured()) return "Kalshi API credentials are not configured in .env";
+  return "";
+}
+
+function fixedDollar(value) {
+  return Math.min(0.99, Math.max(0.01, Number(value))).toFixed(4);
+}
+
+function kalshiOrderSideAndPrice(signalSide, marketPrice) {
+  const normalized = String(signalSide || "").toUpperCase();
+  const maxPrice = Math.min(0.99, Math.max(0.01, Number(marketPrice || 0) + KALSHI_LIVE_MAX_PRICE_SLIPPAGE));
+  if (normalized === "UP" || normalized === "YES") {
+    return { side: "bid", price: fixedDollar(maxPrice), resolvedSide: "yes" };
+  }
+  if (normalized === "DOWN" || normalized === "NO") {
+    return { side: "ask", price: fixedDollar(1 - maxPrice), resolvedSide: "no" };
+  }
+  throw new Error(`Unsupported Kalshi signal side: ${signalSide || "--"}`);
+}
+
+async function placeKalshiLiveOrder({ ticker, signalSide, cost, marketPrice }) {
+  const price = Number(marketPrice);
+  if (!ticker) throw new Error("Kalshi market ticker is required");
+  if (!Number.isFinite(price) || price <= 0 || price >= 1) throw new Error("Kalshi live price must be between 0 and 1");
+  const count = Math.floor(Number(cost || 0) / price);
+  if (count < 1) throw new Error(`Kalshi stake is too small for one contract at ${price.toFixed(4)}`);
+  const order = kalshiOrderSideAndPrice(signalSide, price);
+  const body = {
+    ticker,
+    client_order_id: crypto.randomUUID(),
+    side: order.side,
+    count: count.toFixed(2),
+    price: order.price,
+    time_in_force: "fill_or_kill",
+    self_trade_prevention_type: "taker_at_cross",
+    post_only: false,
+    cancel_order_on_pause: true,
+    reduce_only: false,
+    exchange_index: -1,
+  };
+  const response = await kalshiRequest("POST", "/portfolio/events/orders", body);
+  return {
+    ...response,
+    request: body,
+    contracts: count,
+    effectivePrice: price,
+    resolvedSide: order.resolvedSide,
+  };
+}
+
 async function currentKalshiBalanceDollars() {
   try {
     const data = await kalshiRequest("GET", "/portfolio/balance");
-    return dollars(data?.balance?.balance_dollars, null) ?? dollars(data?.balance_dollars, null) ?? dollars(data?.balance, null) / 100;
+    const nestedDollars = dollars(data?.balance?.balance_dollars, null);
+    if (nestedDollars !== null) return nestedDollars;
+    const rootDollars = dollars(data?.balance_dollars, null);
+    if (rootDollars !== null) return rootDollars;
+    const nestedCents = dollars(data?.balance?.balance, null);
+    if (nestedCents !== null) return nestedCents / 100;
+    const rootCents = dollars(data?.balance, null);
+    return rootCents !== null ? rootCents / 100 : null;
   } catch {
     return null;
   }
+}
+
+async function resolvePaperStartingCash() {
+  const balance = await currentKalshiBalanceDollars();
+  const startingCash = balance !== null ? balance : PAPER_STARTING_CASH;
+  return {
+    startingCash: Number(startingCash.toFixed(6)),
+    source: balance !== null ? "Kalshi balance" : "PAPER_STARTING_CASH fallback",
+  };
+}
+
+async function syncPaperStartingCash() {
+  const { startingCash, source } = await resolvePaperStartingCash();
+  const previousStartingCash = Number(tradingState.balances.startingCash || 0);
+  if (previousStartingCash === startingCash) return { changed: false, startingCash, source };
+  tradingState.balances.startingCash = startingCash;
+  updatePaperEquity();
+  tradingState.updatedAt = new Date().toISOString();
+  saveTradingState();
+  return { changed: true, startingCash, source };
 }
 
 async function fetchCurrentBtc15mMarket() {
@@ -834,6 +1135,287 @@ async function fetchKalshiMarket(ticker) {
   return entry.promise;
 }
 
+function parseJsonArrayField(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== "string") return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function polymarketSlugForBucket(bucketSeconds) {
+  return `${POLYMARKET_BTC5M_SLUG_PREFIX}-${bucketSeconds}`;
+}
+
+function polymarketMarketCloseTimestamp(market) {
+  return Date.parse(market?.endDate || market?.endDateIso || "");
+}
+
+function polymarketMarketStartTimestamp(market) {
+  const parsed = Date.parse(market?.startDate || "");
+  if (Number.isFinite(parsed)) return parsed;
+  const match = String(market?.slug || "").match(/-(\d{10})$/);
+  return match ? Number(match[1]) * 1000 : 0;
+}
+
+function isUsablePolymarketMarket(market, now = Date.now()) {
+  if (!market) return false;
+  const closeTs = polymarketMarketCloseTimestamp(market);
+  if (!Number.isFinite(closeTs) || closeTs <= now) return false;
+  const startTs = polymarketMarketStartTimestamp(market);
+  if (startTs > now + 300_000) return false;
+  return market.active !== false && market.closed !== true && market.acceptingOrders !== false;
+}
+
+async function fetchPolymarketMarketBySlug(slug, { useCache = true } = {}) {
+  const key = String(slug || "").trim();
+  if (!key) return null;
+  const now = Date.now();
+  const cached = polymarketMarketBySlugCache.get(key);
+  if (useCache && cached?.value && cached.expiresAt > now) return cached.value;
+  if (useCache && cached?.promise) return cached.promise;
+
+  const entry = cached || { value: null, expiresAt: 0, promise: null };
+  entry.promise = polymarketGammaRequest(`/markets/slug/${encodeURIComponent(key)}`)
+    .then((market) => {
+      entry.value = market;
+      entry.expiresAt = Date.now() + POLYMARKET_SETTLEMENT_CACHE_MS;
+      return market;
+    })
+    .catch((err) => {
+      if (err.statusCode === 404) return null;
+      if (err.statusCode === 429 && entry.value) return entry.value;
+      throw err;
+    })
+    .finally(() => {
+      entry.promise = null;
+    });
+  polymarketMarketBySlugCache.set(key, entry);
+  return entry.promise;
+}
+
+function selectCurrentPolymarketMarket(markets, now = Date.now()) {
+  return (Array.isArray(markets) ? markets : [])
+    .filter((market) => isUsablePolymarketMarket(market, now))
+    .sort((a, b) => polymarketMarketCloseTimestamp(a) - polymarketMarketCloseTimestamp(b))[0] || null;
+}
+
+function latestPolymarketMarket(markets) {
+  return (Array.isArray(markets) ? markets : [])
+    .filter((market) => Number.isFinite(polymarketMarketCloseTimestamp(market)))
+    .sort((a, b) => polymarketMarketCloseTimestamp(b) - polymarketMarketCloseTimestamp(a))[0] || null;
+}
+
+function bestBookPrice(rows, mode) {
+  const prices = (Array.isArray(rows) ? rows : [])
+    .map((row) => Number(row?.price))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  if (!prices.length) return null;
+  return mode === "bid" ? Math.max(...prices) : Math.min(...prices);
+}
+
+async function fetchPolymarketBook(tokenId) {
+  const key = String(tokenId || "").trim();
+  if (!key) return null;
+  const now = Date.now();
+  const cached = polymarketBookByTokenCache.get(key);
+  if (cached?.value && cached.expiresAt > now) return cached.value;
+  if (cached?.promise) return cached.promise;
+
+  const entry = cached || { value: null, expiresAt: 0, promise: null };
+  const qs = new URLSearchParams({ token_id: key });
+  entry.promise = polymarketClobRequest(`/book?${qs.toString()}`)
+    .then((book) => {
+      entry.value = book;
+      entry.expiresAt = Date.now() + POLYMARKET_MARKET_CACHE_MS;
+      return book;
+    })
+    .catch((err) => {
+      if ((err.statusCode === 404 || err.statusCode === 429) && entry.value) return entry.value;
+      if (err.statusCode === 404) return null;
+      throw err;
+    })
+    .finally(() => {
+      entry.promise = null;
+    });
+  polymarketBookByTokenCache.set(key, entry);
+  return entry.promise;
+}
+
+function polymarketTokenMap(market) {
+  const outcomes = parseJsonArrayField(market?.outcomes);
+  const tokenIds = parseJsonArrayField(market?.clobTokenIds);
+  const bySide = {};
+  outcomes.forEach((outcome, index) => {
+    const normalized = String(outcome || "").trim().toUpperCase();
+    if (normalized === "UP" || normalized === "YES") bySide.UP = String(tokenIds[index] || "");
+    if (normalized === "DOWN" || normalized === "NO") bySide.DOWN = String(tokenIds[index] || "");
+  });
+  return {
+    outcomes,
+    tokenIds,
+    upTokenId: bySide.UP || String(tokenIds[0] || ""),
+    downTokenId: bySide.DOWN || String(tokenIds[1] || ""),
+  };
+}
+
+async function polymarketMarketSnapshot(market) {
+  if (!market) return null;
+  const closeTs = polymarketMarketCloseTimestamp(market);
+  const startTs = polymarketMarketStartTimestamp(market);
+  const tokens = polymarketTokenMap(market);
+  const [upBook, downBook] = await Promise.all([
+    tokens.upTokenId ? fetchPolymarketBook(tokens.upTokenId) : null,
+    tokens.downTokenId ? fetchPolymarketBook(tokens.downTokenId) : null,
+  ]);
+  const upAsk = bestBookPrice(upBook?.asks, "ask");
+  const downAsk = bestBookPrice(downBook?.asks, "ask");
+  const upBid = bestBookPrice(upBook?.bids, "bid");
+  const downBid = bestBookPrice(downBook?.bids, "bid");
+  return {
+    source: "Polymarket Gamma + CLOB APIs",
+    venue: "polymarket",
+    slug: market.slug || null,
+    conditionId: market.conditionId || null,
+    title: market.question || null,
+    startTime: Number.isFinite(startTs) && startTs > 0 ? new Date(startTs).toISOString() : null,
+    closeTime: Number.isFinite(closeTs) ? new Date(closeTs).toISOString() : null,
+    secondsLeft: Number.isFinite(closeTs) ? Math.max(0, Math.round((closeTs - Date.now()) / 1000)) : null,
+    upTokenId: tokens.upTokenId || null,
+    downTokenId: tokens.downTokenId || null,
+    upAsk,
+    downAsk,
+    upBid,
+    downBid,
+    upMinOrderSize: dollars(upBook?.min_order_size, null),
+    downMinOrderSize: dollars(downBook?.min_order_size, null),
+    tickSize: dollars(upBook?.tick_size ?? downBook?.tick_size, null) ?? dollars(market.orderPriceMinTickSize, null),
+    negRisk: market.negRisk === true,
+    acceptingOrders: market.acceptingOrders !== false,
+  };
+}
+
+function sideAskFromPolymarket(snapshot, side) {
+  const normalized = String(side || "").toUpperCase();
+  if (normalized === "UP" || normalized === "YES") return snapshot?.upAsk ?? null;
+  if (normalized === "DOWN" || normalized === "NO") return snapshot?.downAsk ?? null;
+  return null;
+}
+
+function sideTokenFromPolymarket(snapshot, side) {
+  const normalized = String(side || "").toUpperCase();
+  if (normalized === "UP" || normalized === "YES") return snapshot?.upTokenId || null;
+  if (normalized === "DOWN" || normalized === "NO") return snapshot?.downTokenId || null;
+  return null;
+}
+
+function enrichPolymarketSignal(signal, marketSnapshot) {
+  if (!signal || typeof signal !== "object") return;
+  const sideAsk = sideAskFromPolymarket(marketSnapshot, signal.side);
+  signal.live_market_price = sideAsk;
+  signal.live_market_side = signal.side === "UP" ? "UP" : signal.side === "DOWN" ? "DOWN" : null;
+}
+
+function noCurrentPolymarketMessage(details = {}) {
+  const latest = details.latestMarket;
+  if (latest) {
+    return `No open ${POLYMARKET_BTC5M_SLUG_PREFIX} market found. Latest checked: ${latest.slug || "unknown"} closes ${latest.endDate || "unknown"}.`;
+  }
+  return `No open ${POLYMARKET_BTC5M_SLUG_PREFIX} market found.`;
+}
+
+async function fetchCurrentPolymarketBtc5mMarketDetails({ force = false } = {}) {
+  const now = Date.now();
+  if (!force && polymarketBtc5mMarketCache.value && polymarketBtc5mMarketCache.expiresAt > now) {
+    return { ...polymarketBtc5mMarketCache.value, cached: true };
+  }
+  if (!force && polymarketBtc5mMarketCache.promise) return polymarketBtc5mMarketCache.promise;
+
+  polymarketBtc5mMarketCache.promise = (async () => {
+    const bucket = Math.floor(now / 1000 / 300) * 300;
+    const slugs = [];
+    for (let offset = -1; offset <= 4; offset += 1) {
+      slugs.push(polymarketSlugForBucket(bucket + offset * 300));
+    }
+    const markets = (
+      await Promise.all(slugs.map((slug) => fetchPolymarketMarketBySlug(slug, { useCache: false }).catch(() => null)))
+    ).filter(Boolean);
+    const market = selectCurrentPolymarketMarket(markets, now);
+    const snapshot = market ? await polymarketMarketSnapshot(market) : null;
+    return {
+      market,
+      snapshot,
+      source: "slug-bucket",
+      returnedMarkets: markets.length,
+      latestMarket: latestPolymarketMarket(markets),
+    };
+  })()
+    .then((details) => {
+      polymarketBtc5mMarketCache.value = details;
+      polymarketBtc5mMarketCache.expiresAt = Date.now() + POLYMARKET_MARKET_CACHE_MS;
+      return details;
+    })
+    .catch((err) => {
+      if (err.statusCode === 429 && polymarketBtc5mMarketCache.value) {
+        polymarketBtc5mMarketCache.expiresAt = Date.now() + POLYMARKET_MARKET_CACHE_MS;
+        return { ...polymarketBtc5mMarketCache.value, cached: true, rateLimited: true };
+      }
+      throw err;
+    })
+    .finally(() => {
+      polymarketBtc5mMarketCache.promise = null;
+    });
+  return polymarketBtc5mMarketCache.promise;
+}
+
+async function attachPolymarketMarketData(report, input = {}) {
+  if (!report || typeof report !== "object" || !String(report.mode || "").startsWith("live_signal")) {
+    return report;
+  }
+  const details = input.marketDetails || (await fetchCurrentPolymarketBtc5mMarketDetails());
+  const snapshot = details.snapshot || null;
+  if (!snapshot) {
+    report.live_market_note = noCurrentPolymarketMessage(details);
+    return report;
+  }
+  report.live_market = snapshot;
+  report.polymarket_live_market = snapshot;
+  report.live_market_data_owner = normalizePrimaryStrategy(input.primaryStrategy || DEFAULT_POLYMARKET_PRIMARY_STRATEGY).toUpperCase();
+  if (details.cached) report.live_market_cached = true;
+  if (details.rateLimited) report.live_market_rate_limited = true;
+  enrichPolymarketSignal(report.signal, snapshot);
+  enrichPolymarketSignal(report.summary, snapshot);
+  if (report.strategies && typeof report.strategies === "object") {
+    for (const strategyReport of Object.values(report.strategies)) {
+      enrichPolymarketSignal(strategyReport.signal, snapshot);
+      enrichPolymarketSignal(strategyReport.summary, snapshot);
+      if (Array.isArray(strategyReport.trades)) {
+        for (const row of strategyReport.trades) enrichPolymarketSignal(row, snapshot);
+      }
+    }
+  }
+  if (Array.isArray(report.trades)) {
+    for (const row of report.trades) enrichPolymarketSignal(row, snapshot);
+  }
+  return report;
+}
+
+function polymarketResolvedSide(market) {
+  if (!market || market.closed !== true) return "";
+  const outcomes = parseJsonArrayField(market.outcomes);
+  const prices = parseJsonArrayField(market.outcomePrices).map(Number);
+  if (outcomes.length < 2 || prices.length < 2) return "";
+  const winningIndex = prices.findIndex((value) => Number.isFinite(value) && value >= 0.99);
+  if (winningIndex === -1) return "";
+  const outcome = String(outcomes[winningIndex] || "").toUpperCase();
+  if (outcome === "UP" || outcome === "YES") return "UP";
+  if (outcome === "DOWN" || outcome === "NO") return "DOWN";
+  return "";
+}
+
 function marketResolvedSide(market) {
   const result = String(market?.result || "").toLowerCase();
   if (result === "yes" || result === "no") return result;
@@ -901,6 +1483,125 @@ async function pollPaperWorker() {
 
     if (tradingState.activePosition) return;
 
+    if (tradingState.mode === "live") {
+      const configError = kalshiLiveModeConfiguredError();
+      if (configError) throw new Error(configError);
+
+      const primaryStrategy = normalizePrimaryStrategy(tradingState.strategy.primaryStrategy);
+      const marketDetails = await fetchCurrentBtc15mMarketDetails();
+      const report = await attachLiveMarketData(
+        await runSimulator(
+          buildSimArgs({
+            dataMode: "live",
+            strategyMode: primaryStrategy,
+            profile: LIVE_COMPARE_PROFILE,
+            intervalMinutes: 15,
+            startingCash: Math.max(1, Number(tradingState.balances.currentEquity || PAPER_STARTING_CASH)),
+            stakeUsd: tradingState.limits.maxStakeUsd,
+            minBtcMoveUsd: 70,
+            entrySecondsLeft: PAPER_ENTRY_SECONDS_LEFT,
+            thresholdPrice: PAPER_TRIGGER_PRICE,
+            maxTrades: tradingState.limits.maxTradesPerDay,
+          }),
+        ),
+        { intervalMinutes: 15, primaryStrategy, marketDetails },
+      );
+      const snapshot = report.live_market || null;
+      const signal = report.signal || report.summary || null;
+      if (!snapshot) {
+        tradingState.note = report.live_market_note || noCurrentBtc15mMarketMessage(marketDetails);
+        return;
+      }
+      if (!signal || signal.action !== "SIGNAL" || !signal.side) {
+        tradingState.note = `Kalshi live ${primaryStrategy.toUpperCase()} ${signal?.action || "--"} ${signal?.side || ""}. Market ${
+          snapshot.ticker
+        }; ${snapshot.secondsLeft}s left.`;
+        return;
+      }
+
+      const marketId = snapshot.ticker;
+      const alreadyTradedMarket = tradingState.recentTrades.some(
+        (trade) => ["kalshi_live_entry", "kalshi_live_order_error"].includes(trade.kind) && trade.market === marketId,
+      );
+      if (alreadyTradedMarket) {
+        tradingState.note = `Kalshi live already submitted ${marketId} for this market.`;
+        return;
+      }
+
+      const price = dollars(signal.live_market_price, null) ?? dollars(signal.model_entry_price, null);
+      const cost = Math.min(Number(tradingState.limits.maxStakeUsd || 0), Number(tradingState.balances.currentEquity || 0));
+      if (!price || price <= 0 || cost <= 0) {
+        tradingState.note = "Kalshi live signal found, but no usable price or equity is available.";
+        return;
+      }
+
+      let liveOrder = null;
+      try {
+        liveOrder = await placeKalshiLiveOrder({
+          ticker: marketId,
+          signalSide: signal.side,
+          cost,
+          marketPrice: price,
+        });
+      } catch (err) {
+        const message = err.message || String(err);
+        tradingState.lastError = message;
+        tradingState.note = `Kalshi live order error: ${message}`;
+        addTrade({
+          ts: new Date().toISOString(),
+          kind: "kalshi_live_order_error",
+          market: marketId,
+          strategy: primaryStrategy.toUpperCase(),
+          side: signal.side,
+          status: "live_order_error",
+          pnl_usd: 0,
+          entry_price: price,
+          cost_usd: Number(cost.toFixed(6)),
+          error: message,
+        });
+        return;
+      }
+
+      const filledCount = Number(liveOrder.fill_count ?? liveOrder.fillCount ?? liveOrder.contracts ?? 0);
+      if (!Number.isFinite(filledCount) || filledCount <= 0) {
+        tradingState.note = `Kalshi live order submitted for ${marketId}, but no fill was reported.`;
+        return;
+      }
+
+      const fillPrice = dollars(liveOrder.average_fill_price, null) ?? price;
+      const actualCost = Number((filledCount * fillPrice).toFixed(6));
+      const position = {
+        marketTicker: marketId,
+        eventTicker: snapshot.eventTicker || null,
+        side: liveOrder.resolvedSide,
+        price: fillPrice,
+        cost: actualCost,
+        contracts: filledCount,
+        enteredAt: new Date().toISOString(),
+        marketCloseTime: snapshot.closeTime,
+        secondsLeft: snapshot.secondsLeft,
+        liveOrderId: liveOrder.order_id || liveOrder.orderID || null,
+        clientOrderId: liveOrder.client_order_id || liveOrder.request?.client_order_id || null,
+        liveOrder,
+      };
+      tradingState.activePosition = position;
+      addTrade({
+        ts: position.enteredAt,
+        kind: "kalshi_live_entry",
+        market: position.marketTicker,
+        strategy: primaryStrategy.toUpperCase(),
+        side: String(position.side || "").toUpperCase(),
+        status: "live_order_filled",
+        pnl_usd: 0,
+        entry_price: position.price,
+        cost_usd: position.cost,
+        contracts: position.contracts,
+        live_order_id: position.liveOrderId,
+      });
+      tradingState.note = `Kalshi live entered ${String(position.side || "").toUpperCase()} ${position.marketTicker} at ${position.price.toFixed(4)}.`;
+      return;
+    }
+
     const marketDetails = await fetchCurrentBtc15mMarketDetails();
     const market = marketDetails.market;
     if (!market) {
@@ -962,21 +1663,25 @@ async function pollPaperWorker() {
 }
 
 async function startPaperWorker() {
-  if (tradingState.mode !== "paper") throw new Error("Only paper mode can be started from this dashboard");
-  if (tradingState.killSwitch) throw new Error("Turn the kill switch off before starting paper trading");
+  const mode = tradingState.mode === "live" ? "live" : "paper";
+  if (tradingState.killSwitch) throw new Error(`Turn the kill switch off before starting ${mode} trading`);
+  if (mode === "live") {
+    const configError = kalshiLiveModeConfiguredError();
+    if (configError) throw new Error(configError);
+  }
   if (paperWorker.timer) return tradingState;
 
-  const balance = await currentKalshiBalanceDollars();
-  if (!tradingState.balances.startingCash) {
-    tradingState.balances.startingCash = Number((balance ?? 100).toFixed(6));
-    tradingState.balances.realizedPnl = 0;
-    updatePaperEquity();
-  }
+  await syncPaperStartingCash();
 
   tradingState.workerStatus = "active";
   tradingState.startedAt = new Date().toISOString();
   tradingState.stoppedAt = null;
-  tradingState.note = `Paper worker active for ${KALSHI_BTC15M_SERIES}. No real orders will be placed.`;
+  tradingState.note =
+    mode === "live"
+      ? `Kalshi live trading active for ${KALSHI_BTC15M_SERIES}. Primary model: ${normalizePrimaryStrategy(
+          tradingState.strategy.primaryStrategy,
+        ).toUpperCase()}.`
+      : `Paper worker active for ${KALSHI_BTC15M_SERIES}. No real orders will be placed.`;
   paperWorker.timer = setInterval(pollPaperWorker, PAPER_POLL_MS);
   await pollPaperWorker();
   saveTradingState();
@@ -996,7 +1701,7 @@ function stopPaperWorker(reason = "stopped") {
 }
 
 function resetLiveCompareAccounts(startingCash) {
-  const primaryStrategy = normalizePrimaryStrategy(tradingState.strategy.primaryStrategy);
+  const primaryStrategy = normalizePrimaryStrategy(tradingState.liveCompare?.primaryStrategy || DEFAULT_PRIMARY_STRATEGY);
   const enabledStrategies = ensurePrimaryStrategyEnabled(tradingState.liveCompare?.enabledStrategies, primaryStrategy);
   const state = createLiveCompareState();
   state.primaryStrategy = primaryStrategy;
@@ -1240,7 +1945,7 @@ async function startLiveCompareWorker() {
   if (liveCompareWorker.timer) return tradingState;
   const startingCash = Number(LIVE_COMPARE_STARTING_CASH.toFixed(6));
   resetLiveCompareAccounts(startingCash);
-  tradingState.liveCompare.primaryStrategy = normalizePrimaryStrategy(tradingState.strategy.primaryStrategy);
+  tradingState.liveCompare.primaryStrategy = normalizePrimaryStrategy(tradingState.liveCompare.primaryStrategy);
   tradingState.liveCompare.enabledStrategies = enabledCompareStrategies(tradingState.liveCompare);
   tradingState.liveCompare.workerStatus = "active";
   tradingState.liveCompare.startedAt = new Date().toISOString();
@@ -1266,18 +1971,402 @@ function stopLiveCompareWorker(reason = "Selected live compare stopped") {
   return tradingState;
 }
 
-function resumePaperWorkerAfterRestart() {
-  if (paperWorker.timer || tradingState.workerStatus !== "active") return;
-  if (tradingState.mode !== "paper") {
-    stopPaperWorker("paper worker was not resumed after restart because mode is not Paper");
-    return;
+function resetPolymarketAccounts(startingCash) {
+  const primaryStrategy = normalizePrimaryStrategy(tradingState.polymarket?.primaryStrategy || DEFAULT_POLYMARKET_PRIMARY_STRATEGY);
+  const enabledStrategies = enabledPolymarketStrategies(tradingState.polymarket);
+  const mode = tradingState.polymarket?.mode === "live" ? "live" : "paper";
+  const liveArmed = mode === "live" && tradingState.polymarket?.liveArmed === true;
+  const state = createPolymarketState();
+  state.primaryStrategy = primaryStrategy;
+  state.enabledStrategies = enabledStrategies.includes(primaryStrategy) ? enabledStrategies : [primaryStrategy, ...enabledStrategies];
+  state.mode = mode;
+  state.liveArmed = liveArmed;
+  for (const strategy of COMPARE_STRATEGIES) {
+    state.strategies[strategy].startingCash = startingCash;
+    state.strategies[strategy].currentEquity = startingCash;
   }
-  if (tradingState.killSwitch) {
-    stopPaperWorker("paper worker was not resumed after restart because the kill switch is on");
-    return;
+  tradingState.polymarket = state;
+}
+
+function updatePolymarketAccountEquity(account) {
+  updateCompareAccountEquity(account);
+}
+
+function addPolymarketTrade(strategy, trade) {
+  const state = tradingState.polymarket;
+  const account = state.strategies[strategy];
+  const row = {
+    ...trade,
+    venue: "POLYMARKET",
+    strategy: strategy.toUpperCase(),
+    kind: trade.kind || "polymarket",
+  };
+  account.lastTrade = row;
+  account.recentTrades = [row, ...account.recentTrades].slice(0, 50);
+  account.entriesToday = polymarketEntriesToday(account);
+  state.recentTrades = [row, ...state.recentTrades].slice(0, 100);
+  saveTradingState();
+}
+
+function polymarketAccountFailSafeReason(strategy) {
+  const account = tradingState.polymarket.strategies[strategy];
+  account.entriesToday = polymarketEntriesToday(account);
+  const limits = tradingState.limits;
+  const realized = Number(account.realizedPnl || 0);
+  const returnPct = Number(account.returnPct || 0);
+  if (limits.maxDailyLossUsd > 0 && realized <= -limits.maxDailyLossUsd) return `${strategy.toUpperCase()} daily loss $${limits.maxDailyLossUsd} reached`;
+  if (limits.maxDailyLossPct > 0 && returnPct <= -limits.maxDailyLossPct) return `${strategy.toUpperCase()} daily loss ${limits.maxDailyLossPct}% reached`;
+  if (limits.maxTotalLossUsd > 0 && realized <= -limits.maxTotalLossUsd) return `${strategy.toUpperCase()} total loss $${limits.maxTotalLossUsd} reached`;
+  if (limits.maxTotalLossPct > 0 && returnPct <= -limits.maxTotalLossPct) return `${strategy.toUpperCase()} total loss ${limits.maxTotalLossPct}% reached`;
+  if (account.entriesToday >= limits.maxTradesPerDay) return `${strategy.toUpperCase()} max trades per day ${limits.maxTradesPerDay} reached`;
+  return "";
+}
+
+async function settlePolymarketPositions() {
+  const state = tradingState.polymarket;
+  const openPositions = [];
+  for (const strategy of COMPARE_STRATEGIES) {
+    const account = state.strategies[strategy];
+    const position = account.activePosition;
+    if (position?.marketSlug) openPositions.push({ strategy, account, position });
+  }
+  if (!openPositions.length) return;
+
+  const marketsBySlug = new Map();
+  for (const slug of [...new Set(openPositions.map((item) => item.position.marketSlug))]) {
+    try {
+      marketsBySlug.set(slug, await fetchPolymarketMarketBySlug(slug, { useCache: false }));
+    } catch (err) {
+      state.lastError = err.message || String(err);
+    }
   }
 
-  tradingState.note = `Paper worker resumed after server restart for ${KALSHI_BTC15M_SERIES}. No real orders will be placed.`;
+  for (const { strategy, account, position } of openPositions) {
+    const market = marketsBySlug.get(position.marketSlug);
+    const resolvedSide = polymarketResolvedSide(market);
+    if (!resolvedSide) continue;
+
+    const won = resolvedSide === String(position.side || "").toUpperCase();
+    const payout = won ? position.contracts : 0;
+    const pnl = Number((payout - position.cost).toFixed(6));
+    account.realizedPnl = Number((Number(account.realizedPnl || 0) + pnl).toFixed(6));
+    updatePolymarketAccountEquity(account);
+    account.activePosition = null;
+
+    addPolymarketTrade(strategy, {
+      ts: new Date().toISOString(),
+      market: position.marketSlug,
+      side: position.side,
+      status: won ? "won" : "lost",
+      pnl_usd: pnl,
+      entry_price: position.price,
+      exit_value: won ? 1 : 0,
+      cost_usd: position.cost,
+      contracts: position.contracts,
+      live_order_id: position.liveOrderId || null,
+    });
+  }
+}
+
+function polymarketLiveCredentialsConfigured() {
+  return Boolean(process.env.POLYMARKET_PRIVATE_KEY || process.env.PRIVATE_KEY);
+}
+
+function polymarketSignatureType() {
+  const value = Number(process.env.POLYMARKET_SIGNATURE_TYPE || 3);
+  return Number.isFinite(value) ? value : 3;
+}
+
+function polymarketLiveModeConfiguredError() {
+  if (!polymarketLiveCredentialsConfigured()) {
+    return "POLYMARKET_PRIVATE_KEY is not configured in .env";
+  }
+  const signatureType = polymarketSignatureType();
+  if (![0, 1, 2, 3].includes(signatureType)) {
+    return "POLYMARKET_SIGNATURE_TYPE must be 0, 1, 2, or 3";
+  }
+  if (signatureType !== 0 && !process.env.POLYMARKET_FUNDER_ADDRESS) {
+    return "POLYMARKET_FUNDER_ADDRESS is required for Polymarket signature types 1, 2, and 3";
+  }
+  return "";
+}
+
+function placePolymarketLiveOrder(input) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [path.join("scripts", "polymarket_market_order.mjs")], {
+      cwd: ROOT,
+      windowsHide: true,
+      env: process.env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    const timeout = setTimeout(() => {
+      child.kill();
+      reject(new Error("Polymarket order helper timed out"));
+    }, 45_000);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", (err) => {
+      clearTimeout(timeout);
+      reject(err);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timeout);
+      if (code !== 0) {
+        reject(new Error((stderr || stdout || `Polymarket order helper exited with code ${code}`).trim()));
+        return;
+      }
+      try {
+        resolve(JSON.parse(stdout));
+      } catch (err) {
+        reject(new Error(`could not parse Polymarket order helper JSON: ${err.message}`));
+      }
+    });
+    child.stdin.end(JSON.stringify(input));
+  });
+}
+
+async function maybePlacePolymarketLiveOrder({ strategy, signal, snapshot, cost, price }) {
+  const state = tradingState.polymarket;
+  const primary = normalizePrimaryStrategy(state.primaryStrategy);
+  if (state.mode !== "live" || state.liveArmed !== true || strategy !== primary) return null;
+
+  const configError = polymarketLiveModeConfiguredError();
+  if (configError) throw new Error(configError);
+
+  const tokenId = sideTokenFromPolymarket(snapshot, signal.side);
+  if (!tokenId) throw new Error(`No Polymarket token ID found for ${signal.side}`);
+  const limitPrice = Math.min(0.99, Number((price + POLYMARKET_LIVE_MAX_PRICE_SLIPPAGE).toFixed(4)));
+  return placePolymarketLiveOrder({
+    tokenId,
+    side: "BUY",
+    amount: Number(cost.toFixed(6)),
+    price: limitPrice,
+    tickSize: snapshot.tickSize || 0.01,
+    negRisk: snapshot.negRisk === true,
+    marketSlug: snapshot.slug,
+    strategy: strategy.toUpperCase(),
+  });
+}
+
+async function pollPolymarketWorker() {
+  if (polymarketWorker.polling) return;
+  polymarketWorker.polling = true;
+  const state = tradingState.polymarket;
+  const primaryStrategy = normalizePrimaryStrategy(state.primaryStrategy);
+  const activeStrategies = enabledPolymarketStrategies(state);
+  try {
+    state.lastPollAt = new Date().toISOString();
+    state.lastError = null;
+
+    await settlePolymarketPositions();
+    for (const strategy of activeStrategies) {
+      const blocked = polymarketAccountFailSafeReason(strategy);
+      if (blocked) {
+        stopPolymarketWorker(`fail-safe stopped Polymarket ${compareStrategyLabel(activeStrategies)} worker: ${blocked}`);
+        return;
+      }
+    }
+
+    const marketDetails = await fetchCurrentPolymarketBtc5mMarketDetails();
+    const report = await attachPolymarketMarketData(
+      await runSimulator(
+        buildSimArgs({
+          dataMode: "live",
+          strategyMode: "compare",
+          profile: state.profile,
+          intervalMinutes: 5,
+          startingCash: Math.max(
+            1,
+            Math.min(
+              ...activeStrategies.map(
+                (strategy) => Number(state.strategies[strategy]?.currentEquity || 0) || POLYMARKET_STARTING_CASH,
+              ),
+            ),
+          ),
+          stakeUsd: tradingState.limits.maxStakeUsd,
+          minBtcMoveUsd: 70,
+          entrySecondsLeft: POLYMARKET_ENTRY_SECONDS_LEFT,
+          thresholdPrice: POLYMARKET_TRIGGER_PRICE,
+          maxTrades: tradingState.limits.maxTradesPerDay,
+        }),
+      ),
+      { primaryStrategy, marketDetails },
+    );
+    state.lastReport = report;
+    state.liveMarket = report.polymarket_live_market || report.live_market || null;
+    const snapshot = state.liveMarket;
+    if (!snapshot) {
+      state.note = report.live_market_note || noCurrentPolymarketMessage(marketDetails);
+      return;
+    }
+
+    const marketId = snapshot.slug;
+    for (const strategy of COMPARE_STRATEGIES) {
+      const account = state.strategies[strategy];
+      const signal = report.strategies?.[strategy]?.signal || null;
+      account.lastSignal = activeStrategies.includes(strategy) ? signal : null;
+    }
+
+    for (const strategy of activeStrategies) {
+      const account = state.strategies[strategy];
+      const strategyReport = report.strategies?.[strategy];
+      const signal = strategyReport?.signal || null;
+      if (!signal || signal.action !== "SIGNAL" || !signal.side || account.activePosition) continue;
+
+      const price = dollars(signal.live_market_price, null) ?? dollars(signal.model_entry_price, null);
+      const cost = liveCompareCost(strategy, signal, account);
+      if (!price || price <= 0 || cost <= 0) continue;
+
+      const alreadyTradedMarket = account.recentTrades.some(
+        (trade) => (trade.kind === "polymarket_entry" || trade.kind === "polymarket_order_error") && trade.market === marketId,
+      );
+      if (alreadyTradedMarket) continue;
+
+      let liveOrder = null;
+      try {
+        liveOrder = await maybePlacePolymarketLiveOrder({ strategy, signal, snapshot, cost, price });
+      } catch (err) {
+        const message = err.message || String(err);
+        state.lastError = message;
+        state.note = `Polymarket live order error: ${message}`;
+        addPolymarketTrade(strategy, {
+          ts: new Date().toISOString(),
+          kind: "polymarket_order_error",
+          market: marketId,
+          side: signal.side,
+          status: "live_order_error",
+          pnl_usd: 0,
+          entry_price: price,
+          cost_usd: Number(cost.toFixed(6)),
+          error: message,
+        });
+        continue;
+      }
+
+      const contracts = Number((cost / price).toFixed(6));
+      const position = {
+        marketSlug: snapshot.slug,
+        side: signal.side,
+        tokenId: sideTokenFromPolymarket(snapshot, signal.side),
+        price,
+        cost: Number(cost.toFixed(6)),
+        contracts,
+        enteredAt: new Date().toISOString(),
+        marketEnd: snapshot.closeTime,
+        liveOrderId: liveOrder?.orderId || liveOrder?.id || liveOrder?.orderID || null,
+        liveOrder,
+      };
+      account.activePosition = position;
+      account.entriesToday += 1;
+      addPolymarketTrade(strategy, {
+        ts: position.enteredAt,
+        kind: "polymarket_entry",
+        market: marketId,
+        side: position.side,
+        status: liveOrder ? "live_order_submitted" : "open",
+        pnl_usd: 0,
+        entry_price: position.price,
+        cost_usd: position.cost,
+        contracts: position.contracts,
+        live_order_id: position.liveOrderId,
+      });
+    }
+
+    const activeSet = new Set(activeStrategies);
+    const signalNotes = activeStrategies
+      .map((strategy) => {
+        const signal = state.strategies[strategy]?.lastSignal;
+        return `${strategy.toUpperCase()} ${signal?.action || "--"} ${signal?.side || ""}`.trim();
+      })
+      .join("; ");
+    const disabled = COMPARE_STRATEGIES.filter((strategy) => !activeSet.has(strategy))
+      .map((strategy) => strategy.toUpperCase())
+      .join(", ");
+    state.note = `Polymarket 5m ${state.mode}${state.liveArmed ? " live armed" : ""}. Primary: ${primaryStrategy.toUpperCase()}. ${
+      signalNotes || "No selected strategy"
+    }${disabled ? `. Disabled: ${disabled}` : ""}. Market ${snapshot.slug}; ${snapshot.secondsLeft}s left.`;
+  } catch (err) {
+    state.lastError = err.message || String(err);
+    state.note = `Polymarket worker error: ${state.lastError}`;
+  } finally {
+    polymarketWorker.polling = false;
+    saveTradingState();
+  }
+}
+
+async function startPolymarketWorker() {
+  if (polymarketWorker.timer) return tradingState;
+  const startingCash = Number(POLYMARKET_STARTING_CASH.toFixed(6));
+  resetPolymarketAccounts(startingCash);
+  tradingState.polymarket.workerStatus = "active";
+  tradingState.polymarket.startedAt = new Date().toISOString();
+  tradingState.polymarket.stoppedAt = null;
+  tradingState.polymarket.note = `Polymarket 5m worker active in ${tradingState.polymarket.mode} mode. Primary: ${tradingState.polymarket.primaryStrategy.toUpperCase()}.`;
+  polymarketWorker.timer = setInterval(pollPolymarketWorker, POLYMARKET_POLL_MS);
+  await pollPolymarketWorker();
+  saveTradingState();
+  return tradingState;
+}
+
+function stopPolymarketWorker(reason = "Polymarket 5m worker stopped") {
+  if (polymarketWorker.timer) {
+    clearInterval(polymarketWorker.timer);
+    polymarketWorker.timer = null;
+  }
+  tradingState.polymarket.workerStatus = "inactive";
+  tradingState.polymarket.stoppedAt = new Date().toISOString();
+  tradingState.polymarket.note = reason;
+  saveTradingState();
+  return tradingState;
+}
+
+async function armPolymarketLive() {
+  const configError = polymarketLiveModeConfiguredError();
+  if (configError) throw new Error(configError);
+  tradingState.polymarket.mode = "live";
+  tradingState.polymarket.liveArmed = true;
+  tradingState.polymarket.note = `Polymarket live trading armed. Primary: ${normalizePrimaryStrategy(
+    tradingState.polymarket.primaryStrategy,
+  ).toUpperCase()}.`;
+  if (!polymarketWorker.timer) await startPolymarketWorker();
+  saveTradingState();
+  return tradingState;
+}
+
+function setPolymarketPaperMode() {
+  tradingState.polymarket.mode = "paper";
+  tradingState.polymarket.liveArmed = false;
+  tradingState.polymarket.note = "Polymarket returned to paper mode. No real Polymarket orders will be posted.";
+  saveTradingState();
+  return tradingState;
+}
+
+function resumePaperWorkerAfterRestart() {
+  if (paperWorker.timer || tradingState.workerStatus !== "active") return;
+  const mode = tradingState.mode === "live" ? "live" : "paper";
+  if (tradingState.killSwitch) {
+    stopPaperWorker(`${mode} worker was not resumed after restart because the kill switch is on`);
+    return;
+  }
+  if (mode === "live") {
+    const configError = kalshiLiveModeConfiguredError();
+    if (configError) {
+      stopPaperWorker(`Kalshi live worker was not resumed after restart: ${configError}`);
+      return;
+    }
+  }
+
+  tradingState.note =
+    mode === "live"
+      ? `Kalshi live worker resumed after server restart for ${KALSHI_BTC15M_SERIES}.`
+      : `Paper worker resumed after server restart for ${KALSHI_BTC15M_SERIES}. No real orders will be placed.`;
   paperWorker.timer = setInterval(pollPaperWorker, PAPER_POLL_MS);
   pollPaperWorker();
   saveTradingState();
@@ -1308,9 +2397,33 @@ function resumeLiveCompareWorkerAfterRestart() {
   saveTradingState();
 }
 
+function resumePolymarketWorkerAfterRestart() {
+  const state = tradingState.polymarket;
+  if (polymarketWorker.timer || state.workerStatus !== "active") return;
+
+  state.primaryStrategy = normalizePrimaryStrategy(state.primaryStrategy || DEFAULT_POLYMARKET_PRIMARY_STRATEGY);
+  state.enabledStrategies = enabledPolymarketStrategies(state);
+  for (const strategy of COMPARE_STRATEGIES) {
+    const account = state.strategies[strategy];
+    if (!Number(account.startingCash || 0)) {
+      account.startingCash = POLYMARKET_STARTING_CASH;
+      account.currentEquity = POLYMARKET_STARTING_CASH;
+    }
+    resetLegacyFallbackCash(account, POLYMARKET_STARTING_CASH);
+    account.entriesToday = polymarketEntriesToday(account);
+  }
+
+  if (state.mode !== "live") state.liveArmed = false;
+  state.note = `Polymarket 5m worker resumed in ${state.mode} mode. Primary: ${state.primaryStrategy.toUpperCase()}.`;
+  polymarketWorker.timer = setInterval(pollPolymarketWorker, POLYMARKET_POLL_MS);
+  pollPolymarketWorker();
+  saveTradingState();
+}
+
 function resumeWorkersAfterRestart() {
   resumePaperWorkerAfterRestart();
   resumeLiveCompareWorkerAfterRestart();
+  resumePolymarketWorkerAfterRestart();
 }
 
 function persistBeforeExit() {
@@ -1452,7 +2565,21 @@ async function handle(req, res) {
   }
 
   if (req.method === "GET" && req.url === "/api/trading/status") {
+    if (tradingState.mode === "paper" && tradingState.workerStatus !== "active") {
+      await syncPaperStartingCash();
+    }
     sendJson(req, res, 200, tradingState);
+    return;
+  }
+
+  if (req.method === "GET" && req.url === "/api/polymarket/status") {
+    sendJson(req, res, 200, {
+      configured: polymarketLiveCredentialsConfigured(),
+      gammaBaseUrl: POLYMARKET_GAMMA_BASE_URL,
+      clobBaseUrl: POLYMARKET_CLOB_BASE_URL,
+      slugPrefix: POLYMARKET_BTC5M_SLUG_PREFIX,
+      state: tradingState.polymarket,
+    });
     return;
   }
 
@@ -1493,19 +2620,64 @@ async function handle(req, res) {
       tradingState.killSwitch = input.killSwitch !== false;
       tradingState.limits = normalizeTradingSettings(input);
       tradingState.strategy.primaryStrategy = normalizePrimaryStrategy(input.primaryStrategy);
-      tradingState.liveCompare.primaryStrategy = tradingState.strategy.primaryStrategy;
-      tradingState.liveCompare.enabledStrategies = ensurePrimaryStrategyEnabled(
-        input.compareStrategies,
-        tradingState.strategy.primaryStrategy,
-      );
+      tradingState.updatedAt = new Date().toISOString();
+      if (tradingState.workerStatus !== "active") {
+        tradingState.note =
+          tradingState.mode === "live"
+            ? "Kalshi live worker is inactive. Select a model, keep fail-safes set, and turn off the kill switch only when ready."
+            : "Kalshi paper worker is inactive.";
+      }
+      if (paperWorker.timer && tradingState.killSwitch) {
+        stopPaperWorker("Kalshi worker stopped by settings change");
+      }
+      saveTradingState();
+      sendJson(req, res, 200, tradingState);
+    } catch (err) {
+      sendJson(req, res, 500, { error: err.message || String(err) });
+    }
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/trading/live-compare/settings") {
+    try {
+      const raw = await readBody(req);
+      const input = raw ? JSON.parse(raw) : {};
+      const compare = tradingState.liveCompare;
+      compare.primaryStrategy = normalizePrimaryStrategy(input.primaryStrategy || compare.primaryStrategy);
+      compare.enabledStrategies = ensurePrimaryStrategyEnabled(input.compareStrategies, compare.primaryStrategy);
       for (const strategy of COMPARE_STRATEGIES) {
-        if (!tradingState.liveCompare.enabledStrategies.includes(strategy)) {
-          tradingState.liveCompare.strategies[strategy].lastSignal = null;
+        if (!compare.enabledStrategies.includes(strategy)) {
+          compare.strategies[strategy].lastSignal = null;
         }
       }
-      tradingState.updatedAt = new Date().toISOString();
-      if (paperWorker.timer && (tradingState.killSwitch || tradingState.mode !== "paper")) {
-        stopPaperWorker("paper worker stopped by settings change");
+      saveTradingState();
+      sendJson(req, res, 200, tradingState);
+    } catch (err) {
+      sendJson(req, res, 500, { error: err.message || String(err) });
+    }
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/polymarket/settings") {
+    try {
+      const raw = await readBody(req);
+      const input = raw ? JSON.parse(raw) : {};
+      const state = tradingState.polymarket;
+      if (input.mode !== "live" || state.liveArmed !== true) {
+        state.mode = "paper";
+        state.liveArmed = false;
+      }
+      state.primaryStrategy = normalizePrimaryStrategy(input.primaryStrategy || state.primaryStrategy);
+      const explicitStrategies = Array.isArray(input.compareStrategies);
+      const selected = explicitStrategies
+        ? parseCompareStrategyList(input.compareStrategies, [], true)
+        : normalizePolymarketStrategies(input.compareStrategies || state.enabledStrategies);
+      state.enabledStrategies = selected.includes(state.primaryStrategy) ? selected : [state.primaryStrategy, ...selected];
+      state.profile = input.profile === "aggressive" ? "aggressive" : "conservative";
+      for (const strategy of COMPARE_STRATEGIES) {
+        if (!state.enabledStrategies.includes(strategy)) {
+          state.strategies[strategy].lastSignal = null;
+        }
       }
       saveTradingState();
       sendJson(req, res, 200, tradingState);
@@ -1526,7 +2698,7 @@ async function handle(req, res) {
   }
 
   if (req.method === "POST" && req.url === "/api/trading/stop") {
-    sendJson(req, res, 200, stopPaperWorker("paper worker stopped by user"));
+    sendJson(req, res, 200, stopPaperWorker("Kalshi worker stopped by user"));
     return;
   }
 
@@ -1542,6 +2714,36 @@ async function handle(req, res) {
 
   if (req.method === "POST" && req.url === "/api/trading/live-compare/stop") {
     sendJson(req, res, 200, stopLiveCompareWorker("Selected live compare stopped by user"));
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/polymarket/start") {
+    try {
+      const state = await startPolymarketWorker();
+      sendJson(req, res, 200, state);
+    } catch (err) {
+      sendJson(req, res, 400, { error: err.message || String(err), state: tradingState });
+    }
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/polymarket/stop") {
+    sendJson(req, res, 200, stopPolymarketWorker("Polymarket 5m worker stopped by user"));
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/polymarket/arm-live") {
+    try {
+      const state = await armPolymarketLive();
+      sendJson(req, res, 200, state);
+    } catch (err) {
+      sendJson(req, res, 400, { error: err.message || String(err), state: tradingState });
+    }
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/polymarket/paper-mode") {
+    sendJson(req, res, 200, setPolymarketPaperMode());
     return;
   }
 

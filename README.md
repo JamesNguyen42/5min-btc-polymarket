@@ -65,14 +65,31 @@ open Kalshi `KXBTC15M` YES/NO ask prices when the public market API is
 available. It reports the current V1/V2/V3 action, side, BTC move, seconds left,
 and live ask price, but it does not show PnL because the market has not settled.
 
-The Trading page also has **Start selected compare**. The selected trading model
-defaults to **V1**, the live compare defaults to **V1 + V3**, and **V2** stays
-disabled unless you enable it on the page. Compare accounts start from `$10`
-virtual cash by default. The selected model owns the live Kalshi market lookup;
-enabled comparison models reuse that same market snapshot and shared settlement
-result instead of calling the same Kalshi market API separately. It does not post
-real orders. Kalshi market data uses the configured `KALSHI_ENV`; set
-`KALSHI_ENV=prod` when you want the worker pointed at production Kalshi data.
+The dashboard now separates execution from testing:
+
+- **Trading** is for real trading controls. Kalshi BTC 15-minute and Polymarket
+  BTC 5-minute can be activated independently. Both default to **V1** and use
+  the shared fail-safes. Keep the kill switch on until you are ready.
+- **Compare** is for testing models with historical replays, live snapshots,
+  Kalshi live-data compare, and Polymarket live-data paper compare. V2, V3, and
+  Polymarket can be tested there before selecting them on Trading.
+
+Kalshi live trading uses the selected Trading model, the current Kalshi market
+snapshot, and a fill-or-kill V2 order capped by `KALSHI_LIVE_MAX_PRICE_SLIPPAGE`.
+Kalshi market data and orders use the configured `KALSHI_ENV`; set
+`KALSHI_ENV=prod` when you want the worker pointed at production Kalshi.
+
+Polymarket compare defaults to **paper mode**, **V1 primary**, and V1-only
+comparison. It finds the current `btc-updown-5m-<unix bucket>` market through
+Gamma, reads side-specific UP/DOWN prices from the CLOB order book, and records
+paper entries/settlements against live Polymarket data. If you later click
+**Arm Polymarket live** on Trading, only the selected primary model may post real
+Polymarket orders; enabled secondary models remain virtual comparison accounts.
+Live mode requires `POLYMARKET_PRIVATE_KEY` and the official
+`@polymarket/clob-client-v2` SDK.
+For the usual new API deposit-wallet flow, set `POLYMARKET_SIGNATURE_TYPE=3`
+and `POLYMARKET_FUNDER_ADDRESS` to your Polymarket deposit wallet. Use
+signature type `0` only if you intentionally trade from a standalone EOA wallet.
 
 Worker status, paper balances, open virtual positions, and recent trade history
 are persisted to `runtime/trading_state.json` by default. On Render, the
@@ -143,6 +160,8 @@ Paper worker behavior:
 - Stops automatically if any fail-safe is hit.
 - Uses the authenticated Kalshi balance as the starting paper equity when
   available.
+- Falls back to `PAPER_STARTING_CASH` when the Kalshi balance cannot be read.
+  The local default is `$10`.
 - Restarts automatically after a server restart if it was active, mode is still
   `Paper`, and the kill switch is still off.
 

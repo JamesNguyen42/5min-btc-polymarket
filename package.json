@@ -2,6 +2,13 @@
   "name": "kalshi-btc-updown",
   "version": "1.0.0",
   "private": true,
+  "dependencies": {
+    "@polymarket/clob-client-v2": "^1.0.8",
+    "viem": "^2.33.3"
+  },
+  "overrides": {
+    "ws": "^8.21.0"
+  },
   "scripts": {
     "build": "node scripts/write_runtime_config.js",
     "dev": "node server.js",
