@@ -191,6 +191,7 @@ function renderComparison(report) {
     const v1Signal = report.strategies.v1?.signal || {};
     const v2Signal = report.strategies.v2?.signal || {};
     const v3Signal = report.strategies.v3?.signal || {};
+    const v4Signal = report.strategies.v4?.signal || {};
     const market = report.live_market || {};
     comparisonPanel.hidden = false;
     comparisonPanel.innerHTML = `
@@ -210,6 +211,11 @@ function renderComparison(report) {
         <small>${v3Signal.side || "--"} / ${money(v3Signal.move_at_entry_usd)}</small>
       </div>
       <div class="comparison-item">
+        <span>V4 live</span>
+        <strong>${v4Signal.action || "--"}</strong>
+        <small>${v4Signal.side || v4Signal.best_live_side || "--"} / edge ${pct((v4Signal.live_expected_edge ?? v4Signal.expected_edge ?? 0) * 100)}</small>
+      </div>
+      <div class="comparison-item">
         <span>Kalshi ask</span>
         <strong>${market.yesAsk === undefined && market.noAsk === undefined ? "--" : `${price(market.yesAsk)} / ${price(market.noAsk)}`}</strong>
         <small>YES / NO</small>
@@ -221,8 +227,9 @@ function renderComparison(report) {
   const v1 = report.strategies.v1?.summary || {};
   const v2 = report.strategies.v2?.summary || {};
   const v3 = report.strategies.v3?.summary || {};
+  const v4 = report.strategies.v4?.summary || {};
   const comparison = report.comparison || {};
-  const delta = Number(comparison.deltas?.v3_vs_v2?.return_pct_delta ?? comparison.return_pct_delta ?? 0);
+  const delta = Number(comparison.deltas?.v4_vs_v3?.return_pct_delta ?? comparison.return_pct_delta ?? 0);
   const deltaClass = delta > 0 ? "gain" : delta < 0 ? "loss" : "neutral";
 
   comparisonPanel.hidden = false;
@@ -243,9 +250,14 @@ function renderComparison(report) {
       <small>${money(v3.ending_cash)} / ${v3.trades ?? "--"} trades</small>
     </div>
     <div class="comparison-item">
-      <span>V3 minus V2</span>
-      <strong class="${deltaClass}">${pct(comparison.deltas?.v3_vs_v2?.return_pct_delta ?? comparison.return_pct_delta)}</strong>
-      <small>${money(comparison.deltas?.v3_vs_v2?.ending_cash_delta_usd ?? comparison.ending_cash_delta_usd)} / ${(comparison.deltas?.v3_vs_v2?.trade_count_delta ?? comparison.trade_count_delta) >= 0 ? "+" : ""}${comparison.deltas?.v3_vs_v2?.trade_count_delta ?? comparison.trade_count_delta ?? "--"} trades</small>
+      <span>V4 EV/Kelly</span>
+      <strong>${pct(v4.return_pct)}</strong>
+      <small>${money(v4.ending_cash)} / ${v4.trades ?? "--"} trades</small>
+    </div>
+    <div class="comparison-item">
+      <span>V4 minus V3</span>
+      <strong class="${deltaClass}">${pct(comparison.deltas?.v4_vs_v3?.return_pct_delta ?? comparison.return_pct_delta)}</strong>
+      <small>${money(comparison.deltas?.v4_vs_v3?.ending_cash_delta_usd ?? comparison.ending_cash_delta_usd)} / ${(comparison.deltas?.v4_vs_v3?.trade_count_delta ?? comparison.trade_count_delta) >= 0 ? "+" : ""}${comparison.deltas?.v4_vs_v3?.trade_count_delta ?? comparison.trade_count_delta ?? "--"} trades</small>
     </div>
   `;
 }
@@ -274,7 +286,7 @@ function renderLiveSignalRows(report) {
 
 function renderLiveSignalReport(report) {
   const isComparison = report?.mode === "live_signal_comparison" && report.strategies;
-  const primaryReport = isComparison ? report.strategies.v3 || report.strategies.v2 || report : report;
+  const primaryReport = isComparison ? report.strategies.v4 || report.strategies.v3 || report.strategies.v2 || report : report;
   const signal = primaryReport.signal || report.signal || {};
   const action = signal.action || "--";
   const actionClass = action === "SIGNAL" ? "gain" : action === "TOO_LATE" ? "loss" : "neutral";
@@ -333,6 +345,7 @@ function renderLiveCompareStatus(compare) {
   const v1 = strategies.v1 || {};
   const v2 = strategies.v2 || {};
   const v3 = strategies.v3 || {};
+  const v4 = strategies.v4 || {};
   if (!liveComparePanel) return;
   liveComparePanel.hidden = false;
   liveComparePanel.innerHTML = `
@@ -352,9 +365,14 @@ function renderLiveCompareStatus(compare) {
       <small>${money(v3.currentEquity)} / ${v3.entriesToday ?? 0} entries</small>
     </div>
     <div class="comparison-item">
-      <span>V3 signal</span>
-      <strong>${v3.lastSignal?.action || "--"}</strong>
-      <small>${v3.lastSignal?.side || "--"} / ${money(v3.lastSignal?.move_at_entry_usd)}</small>
+      <span>V4 paper</span>
+      <strong>${pct(v4.returnPct)}</strong>
+      <small>${money(v4.currentEquity)} / ${v4.entriesToday ?? 0} entries</small>
+    </div>
+    <div class="comparison-item">
+      <span>V4 signal</span>
+      <strong>${v4.lastSignal?.action || "--"}</strong>
+      <small>${v4.lastSignal?.side || v4.lastSignal?.best_live_side || "--"} / edge ${pct((v4.lastSignal?.live_expected_edge ?? v4.lastSignal?.expected_edge ?? 0) * 100)}</small>
     </div>
   `;
 }
@@ -366,11 +384,11 @@ function renderReport(report) {
   }
 
   const isComparison = report?.mode === "virtual_backtest_comparison" && report.strategies;
-  const primaryReport = isComparison ? report.strategies.v3 || report.strategies.v2 || report : report;
+  const primaryReport = isComparison ? report.strategies.v4 || report.strategies.v3 || report.strategies.v2 || report : report;
   const summary = primaryReport.summary || report.summary || {};
   const returnPct = Number(summary.return_pct || 0);
   const intervalMinutes = primaryReport.params?.interval_minutes || report.params?.interval_minutes || "--";
-  const rangePrefix = isComparison ? "Compare V1/V2/V3 | V3 table shown" : primaryReport.strategy?.label || "Strategy";
+  const rangePrefix = isComparison ? "Compare V1/V2/V3/V4 | V4 table shown" : primaryReport.strategy?.label || "Strategy";
 
   returnValue.textContent = pct(returnPct);
   returnValue.className = `return-value ${returnPct > 0 ? "gain" : returnPct < 0 ? "loss" : "neutral"}`;
@@ -535,9 +553,9 @@ safetyForm.addEventListener("submit", saveSafetySettings);
 startPaperButton.addEventListener("click", startPaperWorker);
 stopPaperButton.addEventListener("click", () => postTradingAction("/api/trading/stop", stopPaperButton, "Stop worker"));
 startCompareButton.addEventListener("click", () =>
-  postTradingAction("/api/trading/live-compare/start", startCompareButton, "Start V1/V2/V3 live compare"),
+  postTradingAction("/api/trading/live-compare/start", startCompareButton, "Start V1/V2/V3/V4 live compare"),
 );
 stopCompareButton.addEventListener("click", () =>
-  postTradingAction("/api/trading/live-compare/stop", stopCompareButton, "Stop V1/V2/V3 compare"),
+  postTradingAction("/api/trading/live-compare/stop", stopCompareButton, "Stop V1/V2/V3/V4 compare"),
 );
 loadTradingStatus();

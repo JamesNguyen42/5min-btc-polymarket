@@ -57,7 +57,8 @@
             <label>
               Strategy
               <select name="strategyMode">
-                <option value="compare">Compare V1/V2/V3</option>
+                <option value="compare">Compare V1/V2/V3/V4</option>
+                <option value="v4">V4 EV/Kelly</option>
                 <option value="v3">V3 regime-aware</option>
                 <option value="v2">V2 adaptive</option>
                 <option value="v1">V1 baseline</option>
@@ -226,8 +227,8 @@
           <div class="action-row">
             <button id="startPaperButton" class="secondary-button" type="button">Start paper worker</button>
             <button id="stopPaperButton" class="danger-button" type="button">Stop worker</button>
-            <button id="startCompareButton" class="secondary-button" type="button">Start V1/V2/V3 live compare</button>
-            <button id="stopCompareButton" class="danger-button" type="button">Stop V1/V2/V3 compare</button>
+            <button id="startCompareButton" class="secondary-button" type="button">Start V1/V2/V3/V4 live compare</button>
+            <button id="stopCompareButton" class="danger-button" type="button">Stop V1/V2/V3/V4 compare</button>
           </div>
         </section>
 
@@ -262,7 +263,7 @@
           <div class="compare-monitor">
             <div class="compare-monitor-head">
               <div>
-                <p class="eyebrow">V1/V2/V3 live compare</p>
+                <p class="eyebrow">V1/V2/V3/V4 live compare</p>
                 <p id="compareWorkerNote" class="muted">Live compare worker is inactive.</p>
               </div>
               <div id="compareWorkerStatus" class="return-value neutral">inactive</div>

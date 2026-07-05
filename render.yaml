@@ -14,6 +14,12 @@ services:
         value: 0.0.0.0
       - key: TRADING_STATE_FILE
         value: /var/data/trading_state.json
+      - key: TRADE_LEDGER_FILE
+        value: /var/data/trading_ledger.jsonl
+      - key: QUOTE_LEDGER_FILE
+        value: /var/data/kalshi_quotes.jsonl
+      - key: KALSHI_FEE_RATE
+        value: "0.07"
       - key: FRONTEND_ORIGIN
         sync: false
       - key: KALSHI_ENV

@@ -14,6 +14,13 @@ const TRADING_STATE_VERSION = 1;
 const TRADING_STATE_FILE = path.isAbsolute(process.env.TRADING_STATE_FILE || "")
   ? process.env.TRADING_STATE_FILE
   : path.resolve(ROOT, process.env.TRADING_STATE_FILE || path.join("runtime", "trading_state.json"));
+const STATE_DIR = path.dirname(TRADING_STATE_FILE);
+const TRADE_LEDGER_FILE = path.isAbsolute(process.env.TRADE_LEDGER_FILE || "")
+  ? process.env.TRADE_LEDGER_FILE
+  : path.resolve(ROOT, process.env.TRADE_LEDGER_FILE || path.join(path.relative(ROOT, STATE_DIR), "trading_ledger.jsonl"));
+const QUOTE_LEDGER_FILE = path.isAbsolute(process.env.QUOTE_LEDGER_FILE || "")
+  ? process.env.QUOTE_LEDGER_FILE
+  : path.resolve(ROOT, process.env.QUOTE_LEDGER_FILE || path.join(path.relative(ROOT, STATE_DIR), "kalshi_quotes.jsonl"));
 const START_PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || (process.env.RENDER ? "0.0.0.0" : "127.0.0.1");
 const KALSHI_API_PREFIX = "/trade-api/v2";
@@ -21,10 +28,11 @@ const KALSHI_BTC15M_SERIES = process.env.KALSHI_BTC15M_SERIES || "KXBTC15M";
 const PAPER_POLL_MS = Math.max(3000, Number(process.env.PAPER_POLL_MS || 10000));
 const LIVE_COMPARE_POLL_MS = Math.max(3000, Number(process.env.LIVE_COMPARE_POLL_MS || PAPER_POLL_MS));
 const LIVE_COMPARE_PROFILE = process.env.LIVE_COMPARE_PROFILE === "aggressive" ? "aggressive" : "conservative";
-const COMPARE_STRATEGIES = ["v1", "v2", "v3"];
+const COMPARE_STRATEGIES = ["v1", "v2", "v3", "v4"];
 const PAPER_ENTRY_SECONDS_LEFT = Math.max(10, Number(process.env.PAPER_ENTRY_SECONDS_LEFT || 120));
 const PAPER_MIN_SECONDS_LEFT = Math.max(5, Number(process.env.PAPER_MIN_SECONDS_LEFT || 30));
 const PAPER_TRIGGER_PRICE = Math.min(0.99, Math.max(0.01, Number(process.env.PAPER_TRIGGER_PRICE || 0.7)));
+const KALSHI_FEE_RATE = Math.max(0, Number(process.env.KALSHI_FEE_RATE || 0.07));
 const FRONTEND_ORIGINS = String(process.env.FRONTEND_ORIGIN || "")
   .split(",")
   .map((origin) => origin.trim())
@@ -63,7 +71,7 @@ const tradingState = {
   stoppedAt: null,
   lastPollAt: null,
   lastError: null,
-  note: "Paper worker is inactive. The V1/V2/V3 live compare worker has its own status below.",
+  note: "Paper worker is inactive. The V1/V2/V3/V4 live compare worker has its own status below.",
 };
 const paperWorker = {
   timer: null,
@@ -109,12 +117,8 @@ function createLiveCompareState() {
     lastError: null,
     lastReport: null,
     liveMarket: null,
-    note: "V1/V2/V3 live compare worker is inactive. It uses live data and virtual paper fills only.",
-    strategies: {
-      v1: createCompareAccount("v1"),
-      v2: createCompareAccount("v2"),
-      v3: createCompareAccount("v3"),
-    },
+    note: "V1/V2/V3/V4 live compare worker is inactive. It uses live data and virtual paper fills only.",
+    strategies: Object.fromEntries(COMPARE_STRATEGIES.map((strategy) => [strategy, createCompareAccount(strategy)])),
     recentTrades: [],
   };
 }
@@ -247,6 +251,15 @@ function saveTradingState() {
     fs.renameSync(tempPath, TRADING_STATE_FILE);
   } catch (err) {
     console.warn(`Could not save trading state: ${err.message || String(err)}`);
+  }
+}
+
+function appendJsonLine(filePath, payload) {
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.appendFileSync(filePath, `${JSON.stringify(payload)}\n`);
+  } catch (err) {
+    console.warn(`Could not append ${filePath}: ${err.message || String(err)}`);
   }
 }
 
@@ -525,6 +538,7 @@ function failSafeReason() {
 function addTrade(trade) {
   tradingState.lastTrade = trade;
   tradingState.recentTrades = [trade, ...tradingState.recentTrades].slice(0, 100);
+  appendJsonLine(TRADE_LEDGER_FILE, { ledger: "paper", savedAt: new Date().toISOString(), ...trade });
   saveTradingState();
 }
 
@@ -657,11 +671,105 @@ function sideAskFromMarket(snapshot, side) {
   return null;
 }
 
-function enrichLiveSignal(signal, marketSnapshot) {
+function kalshiFeePerContract(price) {
+  const n = Number(price);
+  if (!Number.isFinite(n) || n <= 0 || n >= 1) return 0;
+  return KALSHI_FEE_RATE * n * (1 - n);
+}
+
+function v4KellyFraction(probability, price, feePerContract, fraction = 0.25) {
+  const p = Number(probability);
+  const cost = Number(price) + Number(feePerContract || 0);
+  if (!Number.isFinite(p) || !Number.isFinite(cost) || cost <= 0 || cost >= 1) return 0;
+  const odds = (1 - cost) / cost;
+  const raw = (odds * p - (1 - p)) / odds;
+  return Math.max(0, Math.min(1, raw * fraction));
+}
+
+function applyV4LiveEdge(signal, marketSnapshot) {
+  if (!signal || !marketSnapshot) return;
+  const pUp = dollars(signal.p_up_model, null);
+  if (pUp === null) return;
+  const edgeMin = dollars(signal.edge_min, 0.02) ?? 0.02;
+  const candidates = [
+    { side: "UP", ask: dollars(marketSnapshot.yesAsk, null), probability: pUp },
+    { side: "DOWN", ask: dollars(marketSnapshot.noAsk, null), probability: 1 - pUp },
+  ]
+    .filter((row) => row.ask !== null && row.ask > 0 && row.ask < 1)
+    .map((row) => {
+      const fee = kalshiFeePerContract(row.ask);
+      return {
+        ...row,
+        fee,
+        edge: row.probability - row.ask - fee,
+        kelly: v4KellyFraction(row.probability, row.ask, fee, 0.25),
+      };
+    })
+    .sort((a, b) => b.edge - a.edge);
+  const best = candidates[0];
+  if (!best) return;
+
+  signal.best_live_side = best.side;
+  signal.live_market_price = best.ask;
+  signal.live_expected_edge = Number(best.edge.toFixed(6));
+  signal.live_fee_per_contract = Number(best.fee.toFixed(6));
+  signal.live_kelly_fraction = Number(best.kelly.toFixed(6));
+  signal.model_probability = Number(best.probability.toFixed(4));
+
+  if (best.edge < edgeMin) {
+    signal.action = "NO_SIGNAL";
+    signal.side = null;
+    signal.status = "v4_live_edge_below_min";
+    signal.suggested_stake_usd = 0;
+    return;
+  }
+
+  signal.side = best.side;
+  if (signal.entry_window_eligible) {
+    signal.action = "SIGNAL";
+    signal.status = "inside_entry_window_live_edge";
+  } else if (Number(signal.seconds_left || 0) > PAPER_ENTRY_SECONDS_LEFT) {
+    signal.action = "WAIT";
+    signal.status = "waiting_for_entry_window";
+  } else {
+    signal.action = "TOO_LATE";
+    signal.status = "too_late_to_enter";
+  }
+}
+
+function appendQuoteSnapshot(report, marketSnapshot) {
+  if (!report || !marketSnapshot) return;
+  const candidate = report.summary || report.signal || {};
+  appendJsonLine(QUOTE_LEDGER_FILE, {
+    savedAt: new Date().toISOString(),
+    observedAt: report.observed_at || null,
+    latestCandleAt: report.latest_candle_at || null,
+    marketStart: report.market_start || null,
+    marketEnd: report.market_end || null,
+    ticker: marketSnapshot.ticker || null,
+    secondsLeft: marketSnapshot.secondsLeft ?? null,
+    yesBid: marketSnapshot.yesBid ?? null,
+    yesAsk: marketSnapshot.yesAsk ?? null,
+    noBid: marketSnapshot.noBid ?? null,
+    noAsk: marketSnapshot.noAsk ?? null,
+    intervalOpenBtc: candidate.interval_open_btc ?? null,
+    latestBtc: candidate.latest_btc ?? null,
+    moveAtEntryUsd: candidate.move_at_entry_usd ?? null,
+    candidateStrategy: report.comparison?.candidate_strategy || report.strategy?.id || null,
+    candidateAction: candidate.action || null,
+    candidateSide: candidate.side || null,
+    v4Action: report.strategies?.v4?.signal?.action || null,
+    v4Side: report.strategies?.v4?.signal?.side || null,
+    v4LiveEdge: report.strategies?.v4?.signal?.live_expected_edge ?? null,
+  });
+}
+
+function enrichLiveSignal(signal, marketSnapshot, strategy = "") {
   if (!signal || typeof signal !== "object") return;
   const sideAsk = sideAskFromMarket(marketSnapshot, signal.side);
   signal.live_market_price = sideAsk;
   signal.live_market_side = signal.side === "UP" ? "YES" : signal.side === "DOWN" ? "NO" : null;
+  if (strategy === "v4") applyV4LiveEdge(signal, marketSnapshot);
 }
 
 async function attachLiveMarketData(report, input) {
@@ -683,20 +791,22 @@ async function attachLiveMarketData(report, input) {
       return report;
     }
     report.live_market = snapshot;
-    enrichLiveSignal(report.signal, snapshot);
-    enrichLiveSignal(report.summary, snapshot);
+    enrichLiveSignal(report.signal, snapshot, report.strategy?.id);
+    enrichLiveSignal(report.summary, snapshot, report.strategy?.id);
     if (report.strategies && typeof report.strategies === "object") {
       for (const strategyReport of Object.values(report.strategies)) {
-        enrichLiveSignal(strategyReport.signal, snapshot);
-        enrichLiveSignal(strategyReport.summary, snapshot);
+        const strategyId = strategyReport?.strategy?.id || "";
+        enrichLiveSignal(strategyReport.signal, snapshot, strategyId);
+        enrichLiveSignal(strategyReport.summary, snapshot, strategyId);
         if (Array.isArray(strategyReport.trades)) {
-          for (const row of strategyReport.trades) enrichLiveSignal(row, snapshot);
+          for (const row of strategyReport.trades) enrichLiveSignal(row, snapshot, strategyId);
         }
       }
     }
     if (Array.isArray(report.trades)) {
-      for (const row of report.trades) enrichLiveSignal(row, snapshot);
+      for (const row of report.trades) enrichLiveSignal(row, snapshot, report.comparison?.candidate_strategy || "");
     }
+    appendQuoteSnapshot(report, snapshot);
     return report;
   } catch (err) {
     report.live_market_error = err.message || String(err);
@@ -738,7 +848,7 @@ async function settleActivePaperPosition() {
 
   const won = resolvedSide === position.side;
   const payout = won ? position.contracts : 0;
-  const pnl = Number((payout - position.cost).toFixed(6));
+  const pnl = Number((payout - position.cost - Number(position.feeUsd || 0)).toFixed(6));
   tradingState.balances.realizedPnl = Number((Number(tradingState.balances.realizedPnl || 0) + pnl).toFixed(6));
   updatePaperEquity();
 
@@ -751,6 +861,7 @@ async function settleActivePaperPosition() {
     pnl_usd: pnl,
     entry_price: position.price,
     exit_value: won ? 1 : 0,
+    fee_usd: Number(position.feeUsd || 0),
   });
   tradingState.activePosition = null;
 }
@@ -804,12 +915,14 @@ async function pollPaperWorker() {
     }
 
     const contracts = Number((cost / entry.price).toFixed(6));
+    const feeUsd = Number((contracts * kalshiFeePerContract(entry.price)).toFixed(6));
     const position = {
       marketTicker: market.ticker,
       eventTicker: market.event_ticker,
       side: entry.side,
       price: entry.price,
       cost: Number(cost.toFixed(6)),
+      feeUsd,
       contracts,
       enteredAt: new Date().toISOString(),
       marketCloseTime: market.close_time,
@@ -825,6 +938,7 @@ async function pollPaperWorker() {
       pnl_usd: 0,
       entry_price: position.price,
       cost_usd: position.cost,
+      fee_usd: position.feeUsd,
       contracts: position.contracts,
     });
     tradingState.note = `Paper entered ${position.side.toUpperCase()} ${position.marketTicker} at ${position.price.toFixed(4)}.`;
@@ -899,6 +1013,7 @@ function addLiveCompareTrade(strategy, trade) {
   account.recentTrades = [row, ...account.recentTrades].slice(0, 50);
   account.entriesToday = compareEntriesToday(account);
   compare.recentTrades = [row, ...compare.recentTrades].slice(0, 100);
+  appendJsonLine(TRADE_LEDGER_FILE, { ledger: "live_compare", savedAt: new Date().toISOString(), ...row });
   saveTradingState();
 }
 
@@ -928,6 +1043,16 @@ function sideToResolvedSide(side) {
 }
 
 function liveCompareCost(strategy, signal, account) {
+  if (strategy === "v4") {
+    const kelly = dollars(signal?.live_kelly_fraction ?? signal?.kelly_fraction, null);
+    if (kelly !== null && kelly > 0) {
+      return Math.min(
+        Number(account.currentEquity || 0) * Math.min(kelly, 0.25),
+        Number(tradingState.limits.maxStakeUsd || 0),
+        Number(account.currentEquity || 0),
+      );
+    }
+  }
   const suggested = dollars(signal?.suggested_stake_usd, null);
   const fallback = Number(tradingState.limits.maxStakeUsd || 0);
   const target = suggested !== null && suggested > 0 ? suggested : fallback;
@@ -953,7 +1078,7 @@ async function settleLiveComparePositions() {
 
     const won = resolvedSide === position.resolvedSide;
     const payout = won ? position.contracts : 0;
-    const pnl = Number((payout - position.cost).toFixed(6));
+    const pnl = Number((payout - position.cost - Number(position.feeUsd || 0)).toFixed(6));
     account.realizedPnl = Number((Number(account.realizedPnl || 0) + pnl).toFixed(6));
     updateCompareAccountEquity(account);
     account.activePosition = null;
@@ -967,6 +1092,7 @@ async function settleLiveComparePositions() {
       entry_price: position.price,
       exit_value: won ? 1 : 0,
       cost_usd: position.cost,
+      fee_usd: Number(position.feeUsd || 0),
       contracts: position.contracts,
     });
   }
@@ -984,7 +1110,7 @@ async function pollLiveCompareWorker() {
     for (const strategy of COMPARE_STRATEGIES) {
       const blocked = compareAccountFailSafeReason(strategy);
       if (blocked) {
-        stopLiveCompareWorker(`fail-safe stopped V1/V2/V3 compare worker: ${blocked}`);
+        stopLiveCompareWorker(`fail-safe stopped V1/V2/V3/V4 compare worker: ${blocked}`);
         return;
       }
     }
@@ -1036,6 +1162,7 @@ async function pollLiveCompareWorker() {
       if (alreadyTradedMarket) continue;
 
       const contracts = Number((cost / price).toFixed(6));
+      const feeUsd = Number((contracts * kalshiFeePerContract(price)).toFixed(6));
       const position = {
         marketTicker: report.live_market?.ticker || null,
         marketId,
@@ -1043,6 +1170,7 @@ async function pollLiveCompareWorker() {
         resolvedSide: sideToResolvedSide(signal.side),
         price,
         cost: Number(cost.toFixed(6)),
+        feeUsd,
         contracts,
         enteredAt: new Date().toISOString(),
         marketEnd: report.market_end,
@@ -1058,17 +1186,19 @@ async function pollLiveCompareWorker() {
         pnl_usd: 0,
         entry_price: position.price,
         cost_usd: position.cost,
+        fee_usd: position.feeUsd,
         contracts: position.contracts,
       });
     }
 
-    const v1 = compare.strategies.v1.lastSignal;
-    const v2 = compare.strategies.v2.lastSignal;
-    const v3 = compare.strategies.v3.lastSignal;
-    compare.note = `V1/V2/V3 live compare active. V1 ${v1?.action || "--"} ${v1?.side || ""}; V2 ${v2?.action || "--"} ${v2?.side || ""}; V3 ${v3?.action || "--"} ${v3?.side || ""}. No real orders are posted.`;
+    const signalNotes = COMPARE_STRATEGIES.map((strategy) => {
+      const signal = compare.strategies[strategy].lastSignal;
+      return `${strategy.toUpperCase()} ${signal?.action || "--"} ${signal?.side || ""}`.trim();
+    }).join("; ");
+    compare.note = `V1/V2/V3/V4 live compare active. ${signalNotes}. No real orders are posted.`;
   } catch (err) {
     compare.lastError = err.message || String(err);
-    compare.note = `V1/V2/V3 live compare worker error: ${compare.lastError}`;
+    compare.note = `V1/V2/V3/V4 live compare worker error: ${compare.lastError}`;
   } finally {
     liveCompareWorker.polling = false;
     saveTradingState();
@@ -1084,14 +1214,14 @@ async function startLiveCompareWorker() {
   tradingState.liveCompare.workerStatus = "active";
   tradingState.liveCompare.startedAt = new Date().toISOString();
   tradingState.liveCompare.stoppedAt = null;
-  tradingState.liveCompare.note = `V1/V2/V3 live compare active on ${KALSHI_BTC15M_SERIES}. This worker uses live data and virtual paper fills only.`;
+  tradingState.liveCompare.note = `V1/V2/V3/V4 live compare active on ${KALSHI_BTC15M_SERIES}. This worker uses live data and virtual paper fills only.`;
   liveCompareWorker.timer = setInterval(pollLiveCompareWorker, LIVE_COMPARE_POLL_MS);
   await pollLiveCompareWorker();
   saveTradingState();
   return tradingState;
 }
 
-function stopLiveCompareWorker(reason = "V1/V2/V3 live compare stopped") {
+function stopLiveCompareWorker(reason = "V1/V2/V3/V4 live compare stopped") {
   if (liveCompareWorker.timer) {
     clearInterval(liveCompareWorker.timer);
     liveCompareWorker.timer = null;
@@ -1133,7 +1263,7 @@ function resumeLiveCompareWorkerAfterRestart() {
     account.entriesToday = compareEntriesToday(account);
   }
 
-  compare.note = `V1/V2/V3 live compare resumed after server restart on ${KALSHI_BTC15M_SERIES}. This worker uses live data and virtual paper fills only.`;
+  compare.note = `V1/V2/V3/V4 live compare resumed after server restart on ${KALSHI_BTC15M_SERIES}. This worker uses live data and virtual paper fills only.`;
   liveCompareWorker.timer = setInterval(pollLiveCompareWorker, LIVE_COMPARE_POLL_MS);
   pollLiveCompareWorker();
   saveTradingState();
@@ -1166,6 +1296,11 @@ function buildSimArgs(input) {
     String(asNumber(input.stakeUsd, 5, 0.01, 1_000_000)),
     "--threshold-price",
     String(asNumber(input.thresholdPrice, 0.7, 0.01, 0.99)),
+    "--price-model",
+    "synthetic",
+    "--synthetic-spread-cents",
+    "3",
+    "--fees",
     "--min-btc-move-usd",
     String(asNumber(input.minBtcMoveUsd, 70, 0, 10_000)),
     "--entry-seconds-left",
@@ -1361,7 +1496,7 @@ async function handle(req, res) {
   }
 
   if (req.method === "POST" && req.url === "/api/trading/live-compare/stop") {
-    sendJson(req, res, 200, stopLiveCompareWorker("V1/V2/V3 live compare stopped by user"));
+    sendJson(req, res, 200, stopLiveCompareWorker("V1/V2/V3/V4 live compare stopped by user"));
     return;
   }
 

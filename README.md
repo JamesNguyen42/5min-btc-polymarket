@@ -16,8 +16,8 @@ This skill is aligned with a short-horizon momentum strategy:
 
 This is a momentum-following approach, not a reversal strategy.
 
-## V3 Strategy and Comparison
-This branch adds an explicit V3 simulator strategy and keeps V1/V2 intact for
+## V4 Strategy and Comparison
+This branch adds an explicit V4 simulator strategy and keeps V1/V2/V3 intact for
 side-by-side comparison.
 
 - **V1 baseline**: fixed entry timing, fixed BTC move threshold, fixed stake,
@@ -28,8 +28,11 @@ side-by-side comparison.
 - **V3 regime-aware momentum**: volatility-adjusted trigger, trend quality and
   close-location checks, broader opportunity budget, and stronger confidence
   sizing with tighter reversal rejection.
+- **V4 EV/Kelly edge model**: estimates win probability, prices the contract
+  with a synthetic fair-value plus spread model, gates on expected edge after
+  fees, and sizes with capped fractional Kelly.
 
-Run all three strategies on the same BTC candles:
+Run all four strategies on the same BTC candles:
 
 ```bash
 npm run sim:compare
@@ -38,10 +41,10 @@ npm run sim:compare
 Or call the simulator directly:
 
 ```bash
-python scripts/simulate_btc_5m_virtual.py --days 7 --interval-minutes 15 --profile conservative --compare
+python scripts/simulate_btc_5m_virtual.py --days 7 --interval-minutes 15 --profile conservative --compare --fees
 ```
 
-Run the current-market V1/V2/V3 signal from the terminal:
+Run the current-market V1/V2/V3/V4 signal from the terminal:
 
 ```bash
 npm run sim:live
@@ -50,23 +53,25 @@ npm run sim:live
 Live direct call:
 
 ```bash
-python scripts/simulate_btc_5m_virtual.py --live --compare --interval-minutes 15 --profile conservative
+python scripts/simulate_btc_5m_virtual.py --live --compare --interval-minutes 15 --profile conservative --fees
 ```
 
-The dashboard defaults to **Compare V1/V2/V3** and shows V3 as the primary
-result while displaying V3 deltas. The comparison is still a virtual
-backtest: it does not replay historical Kalshi order books, spreads, fees,
-liquidity, fill probability, or exact CF Benchmarks settlement values.
+The dashboard defaults to **Compare V1/V2/V3/V4** and shows V4 as the primary
+result while displaying V4-vs-V3 deltas. Historical comparison now uses
+synthetic fair-value pricing plus configurable spread, optional approximate
+fees, and last-completed-candle timing. It is still a virtual backtest: it does
+not replay historical Kalshi order books, liquidity, fill probability, or exact
+CF Benchmarks settlement values.
 
 For current-market data, switch the dashboard **Data mode** to **Live snapshot**.
 Live mode uses the latest completed Coinbase BTC-USD 1-minute candle inside the
 active interval and, for 15-minute markets, enriches the signal with the current
 open Kalshi `KXBTC15M` YES/NO ask prices when the public market API is
-available. It reports the current V1/V2/V3 action, side, BTC move, seconds left,
+available. It reports the current V1/V2/V3/V4 action, side, BTC move, seconds left,
 and live ask price, but it does not show PnL because the market has not settled.
 
-The Trading page also has **Start V1/V2/V3 live compare**. That starts a backend
-worker that runs all three strategies against the same live feed and records virtual
+The Trading page also has **Start V1/V2/V3/V4 live compare**. That starts a backend
+worker that runs all four strategies against the same live feed and records virtual
 paper entries/settlements side by side. It does not post real orders. Kalshi
 market data uses the configured `KALSHI_ENV`; set `KALSHI_ENV=prod` when you
 want the worker pointed at production Kalshi data.
@@ -76,6 +81,8 @@ are persisted to `runtime/trading_state.json` by default. On Render, the
 Blueprint mounts a persistent disk and writes this file to
 `/var/data/trading_state.json`, so a deploy restart can reload the previous
 state and resume any worker that was active before the restart.
+The backend also appends full paper trade history to `trading_ledger.jsonl` and
+live Kalshi/BTC quote snapshots to `kalshi_quotes.jsonl` in the same directory.
 
 ## Repository Structure
 - `SKILL.md` — skill definition and operating rules
@@ -209,6 +216,12 @@ Run the V3 strategy only:
 python scripts/simulate_btc_5m_virtual.py --days 7 --interval-minutes 15 --profile conservative --strategy v3
 ```
 
+Run the V4 strategy only:
+
+```bash
+python scripts/simulate_btc_5m_virtual.py --days 7 --interval-minutes 15 --profile conservative --strategy v4 --fees
+```
+
 Save a report and full trade ledger:
 
 ```bash
@@ -221,7 +234,10 @@ Useful knobs:
 - `--min-btc-move-usd 70` requires a BTC move by the simulated entry time.
 - `--entry-seconds-left 120` makes the strategy decide with about 2 minutes left.
 - `--interval-minutes 15` simulates Kalshi-style BTC 15-minute Up/Down markets.
-- `--threshold-price 0.70` sets the assumed virtual contract entry price.
+- `--price-model synthetic` prices entries from BTC move-in-volatility units plus spread.
+- `--synthetic-spread-cents 3` adds a synthetic ask spread to fair value.
+- `--fees` deducts approximate Kalshi taker fees from virtual PnL.
+- `--threshold-price 0.70` is only used when `--price-model fixed` is selected.
 
 Important limitation: this is a BTC-driven Kalshi-style binary simulation, not
 a full historical Kalshi order-book replay. It uses real BTC candles and real
