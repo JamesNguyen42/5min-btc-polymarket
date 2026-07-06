@@ -18,8 +18,8 @@ const START_PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || (process.env.RENDER ? "0.0.0.0" : "127.0.0.1");
 const KALSHI_API_PREFIX = "/trade-api/v2";
 const KALSHI_BTC15M_SERIES = process.env.KALSHI_BTC15M_SERIES || "KXBTC15M";
-const PAPER_POLL_MS = Math.max(3000, Number(process.env.PAPER_POLL_MS || 10000));
-const LIVE_COMPARE_POLL_MS = Math.max(3000, Number(process.env.LIVE_COMPARE_POLL_MS || PAPER_POLL_MS));
+const PAPER_POLL_MS = Math.max(1000, Number(process.env.PAPER_POLL_MS || 1000));
+const LIVE_COMPARE_POLL_MS = Math.max(1000, Number(process.env.LIVE_COMPARE_POLL_MS || PAPER_POLL_MS));
 const LIVE_COMPARE_PROFILE = process.env.LIVE_COMPARE_PROFILE === "aggressive" ? "aggressive" : "conservative";
 const COMPARE_STRATEGIES = ["v1", "v2", "v3"];
 const DEFAULT_COMPARE_STRATEGIES = parseCompareStrategyList(process.env.LIVE_COMPARE_STRATEGIES || "v1,v3", ["v1", "v3"]);
@@ -45,7 +45,7 @@ const KALSHI_MIN_SECONDS_LEFT = Math.max(
   Number(process.env.KALSHI_MIN_SECONDS_LEFT || process.env.PAPER_MIN_SECONDS_LEFT || 60),
 );
 const PAPER_TRIGGER_PRICE = Math.min(0.99, Math.max(0.01, Number(process.env.PAPER_TRIGGER_PRICE || 0.7)));
-const POLYMARKET_POLL_MS = Math.max(3000, Number(process.env.POLYMARKET_POLL_MS || PAPER_POLL_MS));
+const POLYMARKET_POLL_MS = Math.max(1000, Number(process.env.POLYMARKET_POLL_MS || PAPER_POLL_MS));
 const POLYMARKET_ENTRY_SECONDS_LEFT = Math.max(10, Number(process.env.POLYMARKET_ENTRY_SECONDS_LEFT || 180));
 const POLYMARKET_MIN_SECONDS_LEFT = Math.max(5, Number(process.env.POLYMARKET_MIN_SECONDS_LEFT || 10));
 const POLYMARKET_TRIGGER_PRICE = Math.min(0.99, Math.max(0.01, Number(process.env.POLYMARKET_TRIGGER_PRICE || PAPER_TRIGGER_PRICE)));
@@ -449,6 +449,7 @@ function mergeLiveCompareState(saved) {
   state.primaryStrategy = normalizePrimaryStrategy(saved.primaryStrategy || saved.executionStrategy);
   state.enabledStrategies = ensurePrimaryStrategyEnabled(saved.enabledStrategies || saved.activeStrategies, state.primaryStrategy);
   mergeNumberFields(state, saved, ["pollSeconds"]);
+  state.pollSeconds = LIVE_COMPARE_POLL_MS / 1000;
   state.lastReport = cleanObjectOrNull(saved.lastReport);
   state.liveMarket = cleanObjectOrNull(saved.liveMarket);
   state.recentTrades = cleanTradeList(saved.recentTrades, 100);
@@ -486,6 +487,7 @@ function mergePolymarketState(saved) {
     return selected.includes(state.primaryStrategy) ? selected : [state.primaryStrategy, ...selected];
   })();
   mergeNumberFields(state, saved, ["pollSeconds", "entrySecondsLeft", "minSecondsLeft"]);
+  state.pollSeconds = POLYMARKET_POLL_MS / 1000;
   state.entrySecondsLeft = Math.max(10, Math.round(Number(state.entrySecondsLeft || POLYMARKET_ENTRY_SECONDS_LEFT)));
   state.minSecondsLeft = Math.max(5, Math.round(Number(state.minSecondsLeft || POLYMARKET_MIN_SECONDS_LEFT)));
   if ([120, 150].includes(Number(saved.entrySecondsLeft))) {
@@ -564,6 +566,7 @@ function mergeTradingState(saved) {
       15 * 60,
     ),
   );
+  tradingState.strategy.pollSeconds = PAPER_POLL_MS / 1000;
   if (
     Number(saved.strategy?.entrySecondsLeft) === 120 &&
     Number(saved.strategy?.minSecondsLeft) === 30 &&

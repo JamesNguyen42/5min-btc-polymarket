@@ -41,6 +41,7 @@ const kalshiEquityLabel = document.querySelector("#kalshiEquityLabel");
 const currentEquity = document.querySelector("#currentEquity");
 const realizedPnl = document.querySelector("#realizedPnl");
 const liveReturn = document.querySelector("#liveReturn");
+const kalshiPredictionLabel = document.querySelector("#kalshiPredictionLabel");
 const tradingMode = document.querySelector("#tradingMode");
 const kalshiLiveOddsPanel = document.querySelector("#kalshiLiveOddsPanel");
 const liveTradeRows = document.querySelector("#liveTradeRows");
@@ -67,7 +68,9 @@ const API_BASE_URL = String(window.SIM_CONFIG?.apiBaseUrl || "").replace(/\/$/, 
 const ALL_COMPARE_STRATEGIES = ["v1", "v2", "v3"];
 const DEFAULT_COMPARE_STRATEGIES = ["v1", "v3"];
 const DEFAULT_PRIMARY_STRATEGY = "v1";
+const TRADING_STATUS_REFRESH_MS = 1000;
 let tradingRefreshTimer = null;
+let tradingStatusLoading = false;
 const dirtyForms = new WeakSet();
 
 function apiPath(path) {
@@ -155,11 +158,11 @@ function normalizedSignalSide(value) {
   return "";
 }
 
-function algorithmPredictionText({ signal, market, workerActive }) {
+function algorithmPredictionText({ signal, market, workerActive, inactiveTitle = "Start the worker to show algorithm odds." }) {
   if (!workerActive) {
     return {
       text: "Inactive",
-      title: "Start the Polymarket worker to show algorithm odds.",
+      title: inactiveTitle,
       active: false,
     };
   }
@@ -167,6 +170,18 @@ function algorithmPredictionText({ signal, market, workerActive }) {
   const secondsLeft = Number(signal?.seconds_left ?? market?.secondsLeft);
   const hasSecondsLeft = Number.isFinite(secondsLeft);
   const action = String(signal?.action || "").toUpperCase();
+  const modelUp = Number(signal?.up_probability);
+  const modelDown = Number(signal?.down_probability);
+  if (Number.isFinite(modelUp) && Number.isFinite(modelDown)) {
+    const sampleCount = Number(signal?.probability_sample_count);
+    const sampleText = Number.isFinite(sampleCount) ? `; ${sampleCount} yesterday/today samples` : "";
+    return {
+      text: `UP ${probability(modelUp)} / DOWN ${probability(modelDown)}`,
+      title: `${action || "NO_DATA"}${hasSecondsLeft ? `; ${secondsText(secondsLeft)} left` : ""}${sampleText}.`,
+      active: true,
+    };
+  }
+
   const signalSide = normalizedSignalSide(signal?.side);
   let direction = signalSide;
   let edge = 0;
@@ -222,6 +237,9 @@ function modelSignalCardHtml({ label = "Algorithm signal", strategy, signal }) {
   const headline = sideText ? `${sideText} ${action}` : action;
   const details = [];
   if (strategy) details.push(String(strategy).toUpperCase());
+  if (Number.isFinite(Number(data.up_probability)) && Number.isFinite(Number(data.down_probability))) {
+    details.push(`UP ${probability(data.up_probability)} / DOWN ${probability(data.down_probability)}`);
+  }
   if (Number.isFinite(Number(data.confidence))) details.push(`confidence ${Number(data.confidence).toFixed(2)}x`);
   if (Number.isFinite(Number(data.move_at_entry_usd))) details.push(`move ${money(data.move_at_entry_usd)}`);
   if (!sideText && data.status) details.push(String(data.status).replace(/_/g, " "));
@@ -827,6 +845,7 @@ function renderPolymarketStatus(polymarket) {
       signal: primaryAccount.lastSignal,
       market: state.liveMarket,
       workerActive: active,
+      inactiveTitle: "Start the Polymarket worker to show algorithm odds.",
     });
     polymarketMode.textContent = prediction.text;
     polymarketMode.title = prediction.title;
@@ -1006,7 +1025,19 @@ function renderTradingStatus(state) {
   const accountBalance = state.accountBalance || {};
   workerStatus.textContent = state.workerStatus || "inactive";
   workerStatus.className = `return-value ${state.workerStatus === "active" ? "gain" : "neutral"}`;
-  tradingMode.textContent = state.mode || "--";
+  const kalshiStrategy = normalizePrimaryStrategy(state.strategy?.primaryStrategy);
+  if (kalshiPredictionLabel) kalshiPredictionLabel.textContent = `${kalshiStrategy.toUpperCase()} algorithm odds`;
+  if (tradingMode) {
+    const prediction = algorithmPredictionText({
+      signal: state.lastSignal,
+      market: state.liveMarket,
+      workerActive: state.workerStatus === "active",
+      inactiveTitle: "Start the Kalshi worker to show algorithm odds.",
+    });
+    tradingMode.textContent = prediction.text;
+    tradingMode.title = prediction.title;
+    tradingMode.className = prediction.active ? "algorithm-prediction" : "algorithm-prediction inactive-prediction";
+  }
   if (kalshiEquityLabel) kalshiEquityLabel.textContent = state.mode === "live" ? "Account balance" : "Paper equity";
   currentEquity.textContent = state.mode === "live" ? money(accountBalance.availableCash) : money(balances.currentEquity);
   if (realizedPnl) realizedPnl.textContent = money(balances.realizedPnl);
@@ -1025,7 +1056,7 @@ function renderTradingStatus(state) {
   const compareActive = state.liveCompare?.workerStatus === "active";
   const polymarketActive = state.polymarket?.workerStatus === "active";
   if ((state.workerStatus === "active" || compareActive || polymarketActive) && !tradingRefreshTimer) {
-    tradingRefreshTimer = setInterval(loadTradingStatus, 5000);
+    tradingRefreshTimer = setInterval(loadTradingStatus, TRADING_STATUS_REFRESH_MS);
   }
   if (state.workerStatus !== "active" && !compareActive && !polymarketActive && tradingRefreshTimer) {
     clearInterval(tradingRefreshTimer);
@@ -1060,6 +1091,8 @@ async function runSimulation(event) {
 }
 
 async function loadTradingStatus() {
+  if (tradingStatusLoading) return;
+  tradingStatusLoading = true;
   try {
     const response = await fetch(apiPath("/api/trading/status"));
     const payload = await response.json();
@@ -1072,6 +1105,8 @@ async function loadTradingStatus() {
     tradingNote.textContent = err.message || String(err);
     workerStatus.textContent = "error";
     workerStatus.className = "return-value loss";
+  } finally {
+    tradingStatusLoading = false;
   }
 }
 

@@ -162,6 +162,88 @@ def fetch_coinbase_1m(start: dt.datetime, end: dt.datetime) -> list[dict[str, fl
     return [out[k] for k in sorted(out)]
 
 
+def coinbase_cache_path() -> Path:
+    return default_runtime_dir() / "coinbase_btc_usd_1m_cache.json"
+
+
+def load_coinbase_cache() -> dict[int, dict[str, float]]:
+    path = coinbase_cache_path()
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[int, dict[str, float]] = {}
+    for key, value in raw.items():
+        if not isinstance(value, dict):
+            continue
+        try:
+            ts = int(key)
+            out[ts] = {
+                "ts": float(value["ts"]),
+                "open": float(value["open"]),
+                "high": float(value["high"]),
+                "low": float(value["low"]),
+                "close": float(value["close"]),
+                "volume": float(value.get("volume") or 0.0),
+            }
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def save_coinbase_cache(candles: dict[int, dict[str, float]], keep_after_ts: int) -> None:
+    path = coinbase_cache_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pruned = {str(ts): candle for ts, candle in sorted(candles.items()) if ts >= keep_after_ts}
+    tmp_path = path.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(pruned, separators=(",", ":")), encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def contiguous_minute_ranges(timestamps: list[int]) -> list[tuple[int, int]]:
+    if not timestamps:
+        return []
+    ranges: list[tuple[int, int]] = []
+    start = timestamps[0]
+    previous = start
+    for ts in timestamps[1:]:
+        if ts == previous + 60:
+            previous = ts
+            continue
+        ranges.append((start, previous + 60))
+        start = ts
+        previous = ts
+    ranges.append((start, previous + 60))
+    return ranges
+
+
+def fetch_coinbase_1m_cached(start: dt.datetime, end: dt.datetime) -> list[dict[str, float]]:
+    start_ts = floor_interval(int(start.timestamp()), 60)
+    end_ts = floor_interval(int(end.timestamp()), 60)
+    if end_ts <= start_ts:
+        return []
+
+    cached = load_coinbase_cache()
+    needed = list(range(start_ts, end_ts, 60))
+    missing = [ts for ts in needed if ts not in cached]
+    for missing_start, missing_end in contiguous_minute_ranges(missing):
+        fetched = fetch_coinbase_1m(
+            dt.datetime.fromtimestamp(missing_start, UTC),
+            dt.datetime.fromtimestamp(missing_end, UTC),
+        )
+        for candle in fetched:
+            cached[int(candle["ts"])] = candle
+
+    if missing:
+        save_coinbase_cache(cached, start_ts - 3 * 24 * 60 * 60)
+
+    return [cached[ts] for ts in needed if ts in cached]
+
+
 def candles_by_ts(candles: list[dict[str, float]]) -> dict[int, dict[str, float]]:
     return {int(c["ts"]): c for c in candles}
 
@@ -443,6 +525,130 @@ def strategy_decision(strategy: str, snapshot: dict[str, Any], min_btc_move_usd:
     if strategy == STRATEGY_V2:
         return v2_decision(snapshot, min_btc_move_usd)
     return v1_decision(snapshot, min_btc_move_usd)
+
+
+def safe_float(value: Any, fallback: float = 0.0) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return numeric if math.isfinite(numeric) else fallback
+
+
+def signal_side_from_decision(decision: dict[str, Any]) -> str | None:
+    side = str(decision.get("side") or "").upper()
+    return side if side in {"UP", "DOWN"} else None
+
+
+def context_similarity_weight(
+    current_snapshot: dict[str, Any],
+    sample_snapshot: dict[str, Any],
+    current_decision: dict[str, Any],
+    sample_decision: dict[str, Any],
+    min_btc_move_usd: float,
+) -> float:
+    current_move = safe_float(current_snapshot.get("move_at_entry"))
+    sample_move = safe_float(sample_snapshot.get("move_at_entry"))
+    current_threshold = safe_float(current_decision.get("dynamic_min_btc_move_usd"), min_btc_move_usd)
+    sample_threshold = safe_float(sample_decision.get("dynamic_min_btc_move_usd"), min_btc_move_usd)
+    move_scale = max(abs(current_move), abs(sample_move), current_threshold, sample_threshold, 20.0)
+    vol_scale = max(
+        safe_float(current_snapshot.get("avg_abs_1m_move")),
+        safe_float(sample_snapshot.get("avg_abs_1m_move")),
+        1.0,
+    )
+
+    score = 0.0
+    score += abs(current_move - sample_move) / move_scale
+    score += 0.65 * abs(safe_float(current_snapshot.get("recent_1m_move")) - safe_float(sample_snapshot.get("recent_1m_move"))) / move_scale
+    score += 0.45 * abs(safe_float(current_snapshot.get("recent_3m_move")) - safe_float(sample_snapshot.get("recent_3m_move"))) / move_scale
+    score += 0.35 * abs(safe_float(current_snapshot.get("avg_abs_1m_move")) - safe_float(sample_snapshot.get("avg_abs_1m_move"))) / vol_scale
+    score += 0.30 * abs(safe_float(current_snapshot.get("trend_quality")) - safe_float(sample_snapshot.get("trend_quality")))
+    score += 0.25 * abs(safe_float(current_snapshot.get("close_location"), 0.5) - safe_float(sample_snapshot.get("close_location"), 0.5))
+
+    weight = math.exp(-1.35 * score)
+    current_direction = int(current_snapshot.get("direction") or 0)
+    sample_direction = int(sample_snapshot.get("direction") or 0)
+    if current_direction and sample_direction and current_direction != sample_direction:
+        weight *= 0.42
+
+    current_side = signal_side_from_decision(current_decision)
+    sample_side = signal_side_from_decision(sample_decision)
+    if current_side and sample_side:
+        weight *= 1.25 if current_side == sample_side else 0.58
+    elif current_side and not sample_side:
+        weight *= 0.78
+    return max(0.001, weight)
+
+
+def live_context_probabilities(
+    args: argparse.Namespace,
+    strategy: str,
+    current_snapshot: dict[str, Any] | None,
+    current_decision: dict[str, Any] | None,
+    context_candles: list[dict[str, float]],
+    context_start_ts: int,
+    current_bucket_start: int,
+) -> dict[str, Any] | None:
+    if not current_snapshot or not current_decision or not context_candles:
+        return None
+
+    params = resolve_params(args)
+    interval_sec = int(args.interval_minutes) * 60
+    elapsed_seconds = int(current_snapshot["entry_ts"]) - int(current_snapshot["bucket_start"])
+    if elapsed_seconds < 0 or elapsed_seconds >= interval_sec:
+        return None
+
+    by_ts = candles_by_ts(context_candles)
+    sim_start_ts = ceil_interval(context_start_ts, interval_sec)
+    up_weight = 0.0
+    total_weight = 0.0
+    sample_count = 0
+    matched_signal_count = 0
+    current_side = signal_side_from_decision(current_decision)
+
+    for bucket_start in range(sim_start_ts, current_bucket_start, interval_sec):
+        bucket_end = bucket_start + interval_sec
+        entry_ts = bucket_start + elapsed_seconds
+        sample_snapshot = build_market_snapshot(by_ts, bucket_start, bucket_end, entry_ts, require_settlement=True)
+        if not sample_snapshot:
+            continue
+        sample_decision = strategy_decision(strategy, sample_snapshot, params["min_btc_move_usd"])
+        sample_side = signal_side_from_decision(sample_decision)
+        if current_side and sample_side == current_side:
+            matched_signal_count += 1
+        weight = context_similarity_weight(
+            current_snapshot,
+            sample_snapshot,
+            current_decision,
+            sample_decision,
+            params["min_btc_move_usd"],
+        )
+        interval_open = safe_float(sample_snapshot.get("interval_open"))
+        settle_btc = safe_float(sample_snapshot.get("settle_btc"))
+        if math.isclose(settle_btc, interval_open):
+            up_weight += weight * 0.5
+        elif settle_btc > interval_open:
+            up_weight += weight
+        total_weight += weight
+        sample_count += 1
+
+    if sample_count == 0 or total_weight <= 0:
+        return None
+
+    prior_weight = min(16.0, max(4.0, math.sqrt(sample_count)))
+    up_probability = ((up_weight + prior_weight * 0.5) / (total_weight + prior_weight)) * 100.0
+    up_probability = clamp(up_probability, 5.0, 95.0)
+    return {
+        "up_probability": round(up_probability, 2),
+        "down_probability": round(100.0 - up_probability, 2),
+        "probability_source": "yesterday_today_similar_setups",
+        "probability_sample_count": sample_count,
+        "probability_effective_sample_weight": round(total_weight, 4),
+        "probability_matching_signal_count": matched_signal_count,
+        "probability_context_start": iso(context_start_ts),
+        "probability_context_end": iso(current_bucket_start),
+    }
 
 
 def max_drawdown_pct(starting_cash: float, equity_curve: list[dict[str, Any]]) -> float:
@@ -832,6 +1038,8 @@ def live_signal_for_strategy(
     latest_candle_ts: int | None,
     bucket_start: int,
     bucket_end: int,
+    context_candles: list[dict[str, float]] | None = None,
+    context_start_ts: int | None = None,
 ) -> dict[str, Any]:
     params = resolve_params(args)
     interval_minutes = int(args.interval_minutes)
@@ -849,6 +1057,7 @@ def live_signal_for_strategy(
         "data_source": "Live Coinbase Exchange BTC-USD 1m candles",
         "live_note": "Live mode uses the latest completed 1-minute candle and does not know final settlement yet.",
         "market_model_note": f"This is a live BTC {interval_minutes}-minute Up/Down signal snapshot, not a settled backtest.",
+        "probability_note": "Algorithm odds compare this partial interval with completed similar intervals from UTC yesterday and today.",
         "observed_at": iso(observed_at_ts),
         "latest_candle_at": iso(latest_candle_ts) if latest_candle_ts else None,
         "market_start": iso(bucket_start),
@@ -884,6 +1093,15 @@ def live_signal_for_strategy(
         return base
 
     decision = strategy_decision(strategy, snapshot, params["min_btc_move_usd"])
+    probability = live_context_probabilities(
+        args,
+        strategy,
+        snapshot,
+        decision,
+        context_candles or [],
+        int(context_start_ts) if context_start_ts is not None else bucket_start,
+        bucket_start,
+    )
 
     side = decision.get("side")
     if side:
@@ -925,6 +1143,8 @@ def live_signal_for_strategy(
         "model_entry_price": round(params["threshold_price"], 4),
         "entry_reason": decision.get("entry_reason"),
     }
+    if probability:
+        signal.update(probability)
     base["signal"] = signal
     base["summary"] = signal
     base["trades"] = [
@@ -1002,19 +1222,22 @@ def simulate_live(args: argparse.Namespace) -> dict[str, Any]:
     bucket_start = floor_interval(observed_at_ts, interval_sec)
     bucket_end = bucket_start + interval_sec
     latest_candle_ts = floor_interval(observed_at_ts, 60) - 60
+    today_start = dt.datetime.fromtimestamp(observed_at_ts, UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    context_start_dt = today_start - dt.timedelta(days=1)
+    context_start_ts = int(context_start_dt.timestamp())
 
     data_started = time.perf_counter()
     candles: list[dict[str, float]] = []
     if latest_candle_ts >= bucket_start:
-        fetch_start = dt.datetime.fromtimestamp(bucket_start, UTC)
         fetch_end = dt.datetime.fromtimestamp(latest_candle_ts + 60, UTC)
-        candles = fetch_coinbase_1m(fetch_start, fetch_end)
+        candles = fetch_coinbase_1m_cached(context_start_dt, fetch_end)
     data_elapsed = time.perf_counter() - data_started
 
     snapshot = None
     if latest_candle_ts >= bucket_start and candles:
+        by_ts = candles_by_ts(candles)
         snapshot = build_market_snapshot(
-            candles_by_ts(candles),
+            by_ts,
             bucket_start,
             bucket_end,
             latest_candle_ts,
@@ -1031,6 +1254,8 @@ def simulate_live(args: argparse.Namespace) -> dict[str, Any]:
                 latest_candle_ts if latest_candle_ts >= bucket_start else None,
                 bucket_start,
                 bucket_end,
+                candles,
+                context_start_ts,
             )
             for strategy in STRATEGIES
         }
@@ -1052,6 +1277,8 @@ def simulate_live(args: argparse.Namespace) -> dict[str, Any]:
         latest_candle_ts if latest_candle_ts >= bucket_start else None,
         bucket_start,
         bucket_end,
+        candles,
+        context_start_ts,
     )
 
 
