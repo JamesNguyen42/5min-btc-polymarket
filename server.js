@@ -17,52 +17,40 @@ const TRADING_STATE_FILE = path.isAbsolute(process.env.TRADING_STATE_FILE || "")
 const START_PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || (process.env.RENDER ? "0.0.0.0" : "127.0.0.1");
 const KALSHI_API_PREFIX = "/trade-api/v2";
-const KALSHI_BTC15M_SERIES = process.env.KALSHI_BTC15M_SERIES || "KXBTC15M";
-const PAPER_POLL_MS = Math.max(1000, Number(process.env.PAPER_POLL_MS || 1000));
-const LIVE_COMPARE_POLL_MS = Math.max(1000, Number(process.env.LIVE_COMPARE_POLL_MS || PAPER_POLL_MS));
-const LIVE_COMPARE_PROFILE = process.env.LIVE_COMPARE_PROFILE === "aggressive" ? "aggressive" : "conservative";
+const KALSHI_BTC15M_SERIES = "KXBTC15M";
+const PAPER_POLL_MS = 1000;
+const LIVE_COMPARE_POLL_MS = 1000;
+const LIVE_COMPARE_PROFILE = "conservative";
 const COMPARE_STRATEGIES = ["v1", "v2", "v3"];
-const DEFAULT_COMPARE_STRATEGIES = parseCompareStrategyList(process.env.LIVE_COMPARE_STRATEGIES || "v1,v3", ["v1", "v3"]);
-const DEFAULT_PRIMARY_STRATEGY = parseCompareStrategyList(process.env.TRADING_PRIMARY_STRATEGY || "v1", ["v1"])[0];
-const DEFAULT_POLYMARKET_STRATEGIES = parseCompareStrategyList(process.env.POLYMARKET_COMPARE_STRATEGIES || "v1", ["v1"]);
-const DEFAULT_POLYMARKET_PRIMARY_STRATEGY = parseCompareStrategyList(
-  process.env.POLYMARKET_PRIMARY_STRATEGY || "v1",
-  ["v1"],
-)[0];
-const LIVE_COMPARE_STARTING_CASH = Math.max(1, envNumber("LIVE_COMPARE_STARTING_CASH", 10));
-const PAPER_STARTING_CASH = Math.max(1, envNumber("PAPER_STARTING_CASH", LIVE_COMPARE_STARTING_CASH));
-const POLYMARKET_STARTING_CASH = Math.max(1, envNumber("POLYMARKET_STARTING_CASH", LIVE_COMPARE_STARTING_CASH));
-const KALSHI_MARKET_CACHE_MS = Math.max(3000, Number(process.env.KALSHI_MARKET_CACHE_MS || 12000));
-const KALSHI_SETTLEMENT_CACHE_MS = Math.max(3000, Number(process.env.KALSHI_SETTLEMENT_CACHE_MS || 30000));
-const POLYMARKET_MARKET_CACHE_MS = Math.max(1000, Number(process.env.POLYMARKET_MARKET_CACHE_MS || 3000));
-const POLYMARKET_SETTLEMENT_CACHE_MS = Math.max(3000, Number(process.env.POLYMARKET_SETTLEMENT_CACHE_MS || 30000));
-const KALSHI_ENTRY_SECONDS_LEFT = Math.max(
-  10,
-  Number(process.env.KALSHI_ENTRY_SECONDS_LEFT || process.env.PAPER_ENTRY_SECONDS_LEFT || 180),
-);
-const KALSHI_MIN_SECONDS_LEFT = Math.max(
-  5,
-  Number(process.env.KALSHI_MIN_SECONDS_LEFT || process.env.PAPER_MIN_SECONDS_LEFT || 60),
-);
-const PAPER_TRIGGER_PRICE = Math.min(0.99, Math.max(0.01, Number(process.env.PAPER_TRIGGER_PRICE || 0.7)));
-const POLYMARKET_POLL_MS = Math.max(1000, Number(process.env.POLYMARKET_POLL_MS || PAPER_POLL_MS));
-const POLYMARKET_ENTRY_SECONDS_LEFT = Math.max(10, Number(process.env.POLYMARKET_ENTRY_SECONDS_LEFT || 180));
-const POLYMARKET_MIN_SECONDS_LEFT = Math.max(5, Number(process.env.POLYMARKET_MIN_SECONDS_LEFT || 10));
-const POLYMARKET_TRIGGER_PRICE = Math.min(0.99, Math.max(0.01, Number(process.env.POLYMARKET_TRIGGER_PRICE || PAPER_TRIGGER_PRICE)));
-const POLYMARKET_BTC5M_SLUG_PREFIX = process.env.POLYMARKET_BTC5M_SLUG_PREFIX || "btc-updown-5m";
+const DEFAULT_COMPARE_STRATEGIES = ["v1", "v3"];
+const DEFAULT_PRIMARY_STRATEGY = "v1";
+const DEFAULT_POLYMARKET_STRATEGIES = ["v1"];
+const DEFAULT_POLYMARKET_PRIMARY_STRATEGY = "v1";
+const LIVE_COMPARE_STARTING_CASH = 10;
+const PAPER_STARTING_CASH = 10;
+const POLYMARKET_STARTING_CASH = 10;
+const KALSHI_MARKET_CACHE_MS = 12000;
+const KALSHI_SETTLEMENT_CACHE_MS = 30000;
+const POLYMARKET_MARKET_CACHE_MS = 3000;
+const POLYMARKET_SETTLEMENT_CACHE_MS = 30000;
+const KALSHI_ENTRY_SECONDS_LEFT = 180;
+const KALSHI_MIN_SECONDS_LEFT = 60;
+const PAPER_TRIGGER_PRICE = 0.7;
+const POLYMARKET_POLL_MS = 1000;
+const POLYMARKET_ENTRY_SECONDS_LEFT = 180;
+const POLYMARKET_MIN_SECONDS_LEFT = 10;
+const POLYMARKET_TRIGGER_PRICE = 0.7;
+const POLYMARKET_BTC5M_SLUG_PREFIX = "btc-updown-5m";
 const POLYMARKET_GAMMA_BASE_URL = (process.env.POLYMARKET_GAMMA_BASE_URL || "https://gamma-api.polymarket.com").replace(/\/$/, "");
 const POLYMARKET_CLOB_BASE_URL = (process.env.POLYMARKET_CLOB_BASE_URL || "https://clob.polymarket.com").replace(/\/$/, "");
-const KALSHI_LIVE_MAX_PRICE_SLIPPAGE = Math.max(0, envNumber("KALSHI_LIVE_MAX_PRICE_SLIPPAGE", 0.03));
-const KALSHI_LIVE_MAX_TAKE_PRICE = asNumber(process.env.KALSHI_LIVE_MAX_TAKE_PRICE, 0.99, 0.01, 1);
-const KALSHI_TAKER_FEE_RATE = Math.max(0, envNumber("KALSHI_TAKER_FEE_RATE", 0.07));
-const KALSHI_LIVE_CASH_BUFFER_USD = Math.max(0, envNumber("KALSHI_LIVE_CASH_BUFFER_USD", 0.25));
-const KALSHI_ORDERBOOK_DEPTH = Math.round(asNumber(process.env.KALSHI_ORDERBOOK_DEPTH, 100, 1, 100));
-const KALSHI_LIVE_TIME_IN_FORCE =
-  process.env.KALSHI_LIVE_TIME_IN_FORCE === "fill_or_kill" && process.env.KALSHI_LIVE_ALLOW_FILL_OR_KILL === "1"
-    ? "fill_or_kill"
-    : "immediate_or_cancel";
-const POLYMARKET_LIVE_MAX_PRICE_SLIPPAGE = Math.max(0, envNumber("POLYMARKET_LIVE_MAX_PRICE_SLIPPAGE", 0.03));
-const ACCOUNT_BALANCE_CACHE_MS = Math.max(5000, Number(process.env.ACCOUNT_BALANCE_CACHE_MS || 30000));
+const KALSHI_LIVE_MAX_PRICE_SLIPPAGE = 0.03;
+const KALSHI_LIVE_MAX_TAKE_PRICE = 0.99;
+const KALSHI_TAKER_FEE_RATE = 0.07;
+const KALSHI_LIVE_CASH_BUFFER_USD = 0.25;
+const KALSHI_ORDERBOOK_DEPTH = 100;
+const KALSHI_LIVE_TIME_IN_FORCE = "immediate_or_cancel";
+const POLYMARKET_LIVE_MAX_PRICE_SLIPPAGE = 0.03;
+const ACCOUNT_BALANCE_CACHE_MS = 30000;
 const FRONTEND_ORIGINS = String(process.env.FRONTEND_ORIGIN || "")
   .split(",")
   .map((origin) => origin.trim())
@@ -318,11 +306,6 @@ function cleanTradeList(value, maxItems) {
 
 function cleanObjectOrNull(value) {
   return isPlainObject(value) ? value : null;
-}
-
-function envNumber(key, fallback) {
-  const value = Number(process.env[key]);
-  return Number.isFinite(value) ? value : fallback;
 }
 
 function mergeNumberFields(target, source, keys) {
