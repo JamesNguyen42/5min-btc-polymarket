@@ -4,6 +4,7 @@ import csv
 import datetime as dt
 import json
 import math
+import os
 import socket
 import sys
 import time
@@ -162,6 +163,19 @@ def fetch_coinbase_1m(start: dt.datetime, end: dt.datetime) -> list[dict[str, fl
     return [out[k] for k in sorted(out)]
 
 
+def fetch_coinbase_ticker_price() -> float | None:
+    url = "https://api.exchange.coinbase.com/products/BTC-USD/ticker"
+    req = urllib.request.Request(url, headers={"User-Agent": "btc-updown-virtual-simulator/2.0"})
+    data = fetch_json_with_retries(req, timeout=10)
+    if not isinstance(data, dict):
+        return None
+    try:
+        price = float(data.get("price"))
+    except (TypeError, ValueError):
+        return None
+    return price if math.isfinite(price) and price > 0 else None
+
+
 def coinbase_cache_path() -> Path:
     return default_runtime_dir() / "coinbase_btc_usd_1m_cache.json"
 
@@ -199,9 +213,17 @@ def save_coinbase_cache(candles: dict[int, dict[str, float]], keep_after_ts: int
     path = coinbase_cache_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     pruned = {str(ts): candle for ts, candle in sorted(candles.items()) if ts >= keep_after_ts}
-    tmp_path = path.with_suffix(".tmp")
-    tmp_path.write_text(json.dumps(pruned, separators=(",", ":")), encoding="utf-8")
-    tmp_path.replace(path)
+    tmp_path = path.with_name(f"{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    try:
+        tmp_path.write_text(json.dumps(pruned, separators=(",", ":")), encoding="utf-8")
+        tmp_path.replace(path)
+    except OSError:
+        # Multiple live workers may refresh this cache at the same time. A lost
+        # cache write is acceptable because the current process already has data.
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def contiguous_minute_ranges(timestamps: list[int]) -> list[tuple[int, int]]:
@@ -321,6 +343,91 @@ def build_market_snapshot(
         "low_so_far": low_so_far,
         "trend_quality": trend_quality,
         "close_location": close_location,
+    }
+
+
+def build_live_market_snapshot(
+    by_ts: dict[int, dict[str, float]],
+    bucket_start: int,
+    bucket_end: int,
+    observed_at_ts: int,
+    latest_candle_ts: int,
+    current_price: float | None,
+) -> dict[str, Any] | None:
+    open_candle = by_ts.get(bucket_start)
+    previous_candle = by_ts.get(bucket_start - 60)
+    latest_candle = by_ts.get(latest_candle_ts)
+    fallback_price = (
+        float(latest_candle["close"])
+        if latest_candle
+        else float(previous_candle["close"])
+        if previous_candle
+        else None
+    )
+    entry_btc = current_price if current_price is not None else fallback_price
+    if entry_btc is None:
+        return None
+
+    interval_open = (
+        float(open_candle["open"])
+        if open_candle
+        else float(previous_candle["close"])
+        if previous_candle
+        else float(entry_btc)
+    )
+
+    entry_ts = max(bucket_start, min(floor_interval(observed_at_ts, 60), bucket_end - 60))
+    visible = [by_ts[t] for t in closed_range(bucket_start, min(latest_candle_ts, bucket_end - 60)) if t in by_ts]
+    synthetic_current = {
+        "ts": float(entry_ts),
+        "open": float(visible[-1]["close"]) if visible else interval_open,
+        "high": max(float(entry_btc), float(visible[-1]["close"]) if visible else interval_open),
+        "low": min(float(entry_btc), float(visible[-1]["close"]) if visible else interval_open),
+        "close": float(entry_btc),
+        "volume": 0.0,
+    }
+    if not visible or int(visible[-1]["ts"]) < entry_ts:
+        visible.append(synthetic_current)
+    else:
+        visible[-1] = {
+            **visible[-1],
+            "high": max(float(visible[-1]["high"]), synthetic_current["high"]),
+            "low": min(float(visible[-1]["low"]), synthetic_current["low"]),
+            "close": float(entry_btc),
+        }
+
+    closes = [interval_open] + [float(c["close"]) for c in visible]
+    close_deltas = [abs(closes[i] - closes[i - 1]) for i in range(1, len(closes))]
+    move_at_entry = float(entry_btc) - interval_open
+    direction = sign(move_at_entry)
+    high_so_far = max([interval_open, float(entry_btc)] + [float(c["high"]) for c in visible])
+    low_so_far = min([interval_open, float(entry_btc)] + [float(c["low"]) for c in visible])
+    previous_close = closes[-2] if len(closes) >= 2 else interval_open
+    lookback_close = closes[-4] if len(closes) >= 4 else closes[0]
+    signed_close_moves = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
+    same_direction_moves = sum(1 for delta in signed_close_moves if direction and sign(delta) == direction)
+    trend_quality = same_direction_moves / len(signed_close_moves) if signed_close_moves else 0.0
+    visible_range = max(0.0, high_so_far - low_so_far)
+    close_location = (float(entry_btc) - low_so_far) / visible_range if visible_range > 0 else 0.5
+
+    return {
+        "bucket_start": bucket_start,
+        "bucket_end": bucket_end,
+        "entry_ts": entry_ts,
+        "interval_open": interval_open,
+        "entry_btc": float(entry_btc),
+        "settle_btc": None,
+        "move_at_entry": move_at_entry,
+        "direction": direction,
+        "visible_candles": visible,
+        "avg_abs_1m_move": mean(close_deltas),
+        "recent_1m_move": float(entry_btc) - previous_close,
+        "recent_3m_move": float(entry_btc) - lookback_close,
+        "high_so_far": high_so_far,
+        "low_so_far": low_so_far,
+        "trend_quality": trend_quality,
+        "close_location": close_location,
+        "uses_live_ticker": current_price is not None,
     }
 
 
@@ -1055,7 +1162,7 @@ def live_signal_for_strategy(
             "note": STRATEGY_NOTES[strategy],
         },
         "data_source": "Live Coinbase Exchange BTC-USD 1m candles",
-        "live_note": "Live mode uses the latest completed 1-minute candle and does not know final settlement yet.",
+        "live_note": "Live mode uses the current Coinbase BTC ticker plus completed 1-minute candles and does not know final settlement yet.",
         "market_model_note": f"This is a live BTC {interval_minutes}-minute Up/Down signal snapshot, not a settled backtest.",
         "probability_note": "Algorithm odds compare this partial interval with completed similar intervals from UTC yesterday and today.",
         "observed_at": iso(observed_at_ts),
@@ -1083,9 +1190,9 @@ def live_signal_for_strategy(
         signal = {
             "action": "NO_DATA",
             "side": None,
-            "status": "no_completed_live_candle",
+            "status": "no_live_price_or_recent_candle",
             "seconds_left": seconds_left,
-            "reason": "waiting_for_first_completed_candle_in_interval",
+            "reason": "could_not_build_live_market_snapshot",
         }
         base["signal"] = signal
         base["summary"] = signal
@@ -1228,20 +1335,26 @@ def simulate_live(args: argparse.Namespace) -> dict[str, Any]:
 
     data_started = time.perf_counter()
     candles: list[dict[str, float]] = []
-    if latest_candle_ts >= bucket_start:
+    current_price = None
+    try:
+        current_price = fetch_coinbase_ticker_price()
+    except RuntimeError:
+        current_price = None
+    if latest_candle_ts >= context_start_ts:
         fetch_end = dt.datetime.fromtimestamp(latest_candle_ts + 60, UTC)
         candles = fetch_coinbase_1m_cached(context_start_dt, fetch_end)
     data_elapsed = time.perf_counter() - data_started
 
     snapshot = None
-    if latest_candle_ts >= bucket_start and candles:
+    if candles or current_price is not None:
         by_ts = candles_by_ts(candles)
-        snapshot = build_market_snapshot(
+        snapshot = build_live_market_snapshot(
             by_ts,
             bucket_start,
             bucket_end,
+            observed_at_ts,
             latest_candle_ts,
-            require_settlement=False,
+            current_price,
         )
 
     if args.compare:
@@ -1251,7 +1364,7 @@ def simulate_live(args: argparse.Namespace) -> dict[str, Any]:
                 strategy,
                 snapshot,
                 observed_at_ts,
-                latest_candle_ts if latest_candle_ts >= bucket_start else None,
+                latest_candle_ts if candles else None,
                 bucket_start,
                 bucket_end,
                 candles,
@@ -1263,7 +1376,7 @@ def simulate_live(args: argparse.Namespace) -> dict[str, Any]:
             args,
             reports,
             observed_at_ts,
-            latest_candle_ts if latest_candle_ts >= bucket_start else None,
+            latest_candle_ts if candles else None,
             bucket_start,
             bucket_end,
             data_elapsed,
@@ -1274,7 +1387,7 @@ def simulate_live(args: argparse.Namespace) -> dict[str, Any]:
         args.strategy,
         snapshot,
         observed_at_ts,
-        latest_candle_ts if latest_candle_ts >= bucket_start else None,
+        latest_candle_ts if candles else None,
         bucket_start,
         bucket_end,
         candles,
