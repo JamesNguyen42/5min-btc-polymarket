@@ -1,8 +1,43 @@
-# Kalshi BTC Up/Down Dashboard
+# BTC AI Trading Desk
 
-Dashboard and virtual simulator for **Kalshi-style BTC 15-minute Up/Down** markets.
+An AI-assisted paper and live trading dashboard for **Kalshi BTC 15-minute** and
+**Polymarket BTC 5-minute** Up/Down markets.
 
-The active app is simulation-first and uses virtual money by default. Legacy Polymarket/OpenClaw scripts remain in the repo but are not the recommended path for US users.
+The execution pipeline combines the existing short-horizon momentum strategies
+with two independent reviewers: Meta Llama 3.3 and NVIDIA Nemotron, served
+through the configured OpenAI-compatible endpoint:
+
+- `meta/llama-3.3-70b-instruct` analyzes the proposed trade.
+- `nvidia/llama-3.3-nemotron-super-49b-v1.5` performs an independent review.
+- Recent Bitcoin RSS/Atom headlines are supplied as untrusted, read-only context.
+- Each workspace can use Llama 3.3, Nemotron, or both. A trade proceeds only
+  when every selected reviewer clears the confidence floor and estimates at
+  least a 3% edge over the quoted price. Any missing selected model or web
+  response blocks the trade.
+
+The app is simulation-first. The **Paper trading** page uses fake bankrolls and
+virtual fills; the **Live trading** page can post real orders only after explicit
+activation. Live sizing can spend only available venue cash and remains bounded
+by the stake, daily-loss, total-loss, and trade-count limits.
+
+> NVIDIA Developer Program hosted endpoints are free for prototyping. They can be
+> rate limited and are not a guaranteed free 24/7 production service. For reliable
+> unattended deployment, use a production endpoint or self-hosted NIM covered by
+> the appropriate NVIDIA terms.
+
+## Llama and Nemotron setup
+
+Create an API key at NVIDIA's API catalog, then add it to `.env`:
+
+```text
+LLAMA_API_KEY=nvapi-...
+NVIDIA_NIM_BASE_URL=https://integrate.api.nvidia.com/v1
+NVIDIA_LLAMA_MODEL=meta/llama-3.3-70b-instruct
+NVIDIA_NEMOTRON_MODEL=nvidia/llama-3.3-nemotron-super-49b-v1.5
+```
+
+Without `LLAMA_API_KEY`, the dashboard and historical replay still load, but
+paper/live workers fail closed at the AI gate and do not enter positions.
 
 ## Strategy (Momentum into Close)
 This skill is aligned with a short-horizon momentum strategy:
@@ -53,8 +88,8 @@ Live direct call:
 python scripts/simulate_btc_5m_virtual.py --live --compare --interval-minutes 15 --profile conservative
 ```
 
-The dashboard defaults to **Compare V1/V2/V3** and shows V3 as the primary
-result while displaying V3 deltas. The comparison is still a virtual
+The historical replay can **Compare V1/V2/V3** and shows V3 as the primary
+result. The comparison is still a virtual
 backtest: it does not replay historical Kalshi order books, spreads, fees,
 liquidity, fill probability, or exact CF Benchmarks settlement values.
 
@@ -65,15 +100,16 @@ open Kalshi `KXBTC15M` YES/NO ask prices when the public market API is
 available. It reports the current V1/V2/V3 action, side, BTC move, seconds left,
 and live ask price, but it does not show PnL because the market has not settled.
 
-The dashboard now separates execution from testing:
+The dashboard separates execution environments with the same minimal controls:
 
-- **Trading** is for real trading controls. Kalshi BTC 15-minute and Polymarket
-  BTC 5-minute can be activated independently. Both default to **V1** and each
-  has its own kill switch, loss limits, stake cap, and daily trade cap. Keep the
-  relevant kill switch on until you are ready.
-- **Compare** is for testing models with historical replays, live snapshots,
-  Kalshi live-data compare, and Polymarket live-data paper compare. V2, V3, and
-  Polymarket can be tested there before selecting them on Trading.
+- **Paper** selects a model, bankroll, and present or historical start date.
+  Historical ranges advance one day at a time, updating the chart after each
+  day while both configured market routes replay concurrently.
+- **Live** uses the same controls. A present-time run asks for confirmation and
+  then uses configured funded accounts, displays the current Kalshi available
+  cash balance, and treats past dates as read-only fast replays.
+- Both dark-mode pages put controls and won/lost totals on the left, with a
+  chart on the right showing time horizontally and money vertically.
 
 Kalshi live trading uses the selected Trading model, the current Kalshi market
 snapshot, and V2 IOC orders capped by `KALSHI_LIVE_MAX_PRICE_SLIPPAGE`.
@@ -160,9 +196,8 @@ percentage gain/loss.
 
 Dashboard pages:
 
-- Simulation: replay historical BTC 15-minute windows with virtual money.
-- Simulation can still run 5-minute windows for comparison.
-- Trading: monitor worker status and save fail-safe limits for live/paper mode.
+- Paper: model, bankroll, start date, Run/Stop, totals, and performance chart.
+- Live: the same interface for funded trading or read-only historical replay.
 
 The Trading page stores backend fail-safe settings, paper balances, open virtual
 positions, and recent worker trades. The kill switch defaults to on. Supported
@@ -177,8 +212,8 @@ Paper worker behavior:
 - Stops automatically if any fail-safe is hit.
 - Uses the authenticated Kalshi balance as the starting paper equity when
   available.
-- Falls back to `PAPER_STARTING_CASH` when the Kalshi balance cannot be read.
-  The local default is `$10`.
+- Uses the paper bankroll configured in the UI. The local default is `$100` and
+  is intentionally independent from the funded Kalshi balance.
 - Restarts automatically after a server restart if it was active, mode is still
   `Paper`, and the kill switch is still off.
 
@@ -313,6 +348,15 @@ Set this Render environment variable after the Vercel site exists:
 FRONTEND_ORIGIN=https://your-vercel-app.vercel.app
 ```
 
+`FRONTEND_ORIGIN` can contain comma-separated exact origins if you also want a
+specific Vercel preview deployment to access the API. Avoid allowing arbitrary
+`vercel.app` sites because this API can control live trading.
+
+The Blueprint also prompts for the model, Kalshi, and Polymarket secrets needed
+by the live workers. For an existing Render service, add newly introduced
+`sync: false` variables manually in the Render dashboard; Blueprint updates do
+not populate new secret values automatically.
+
 Keep the Render service URL. It will look like:
 
 ```text
@@ -335,7 +379,10 @@ Set this Vercel environment variable:
 SIM_API_BASE_URL=https://your-render-service.onrender.com
 ```
 
-Redeploy Vercel after setting `SIM_API_BASE_URL`.
+Set it for every Vercel environment you deploy (Production and, if used,
+Preview), then redeploy. Vercel builds intentionally fail when this variable is
+missing. Use the HTTPS origin only, without an `/api` path, so the frontend
+cannot deploy with a broken or mixed-content API URL.
 
 ### 4. Confirm the connection
 Open the Vercel URL, run a short simulation, and confirm the result panel updates.
@@ -343,7 +390,8 @@ If it fails, check:
 
 - Render `/health` returns `{ "ok": true }`
 - Vercel `SIM_API_BASE_URL` exactly matches the Render service URL
-- Render `FRONTEND_ORIGIN` exactly matches the Vercel site origin
+- Render `FRONTEND_ORIGIN` includes the exact Vercel site origin
+- The Live page shows the authenticated Kalshi available-cash balance
 
 Unified skill control (recommended):
 ```bash

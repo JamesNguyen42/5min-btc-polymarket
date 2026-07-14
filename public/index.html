@@ -3,574 +3,88 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>BTC Up/Down Dashboard</title>
+    <meta name="theme-color" content="#000000" />
+    <title>Market AI</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <main class="app-shell">
-      <header class="topbar">
-        <div>
-          <p class="eyebrow">BTC Up/Down</p>
-          <h1>Trading Dashboard</h1>
+    <header class="site-header">
+      <a class="wordmark" href="/" aria-label="Market AI home">MARKET AI</a>
+      <nav class="nav" aria-label="Trading mode">
+        <button class="nav-button active" type="button" data-page="paperPage">Paper</button>
+        <button class="nav-button" type="button" data-page="livePage">Live</button>
+      </nav>
+    </header>
+
+    <main>
+      <section id="paperPage" class="page active" data-environment="paper">
+        <div class="workspace">
+          <div class="side-panel">
+            <header class="page-header">
+              <p>Paper</p>
+              <span id="paperStatus">Stopped</span>
+            </header>
+
+            <form id="paperForm" class="run-form">
+              <label>Model<select name="model"><option value="llama">Llama 3.3</option><option value="nemotron">Nemotron</option><option value="consensus">Both</option></select></label>
+              <label>Money<div class="money-input"><span>$</span><input name="amount" type="number" min="1" step="1" value="100" inputmode="decimal" /></div></label>
+              <label>Start<select name="range"><option value="now">Now</option><option value="14d">14 days ago</option><option value="custom">Choose a date</option></select></label>
+              <label class="date-field" hidden>Date<input name="startDate" type="date" /></label>
+              <button id="paperRunButton" class="run-button" type="submit">Run</button>
+            </form>
+
+            <div class="totals">
+              <div><span>Won</span><strong id="paperWon">$0.00</strong><small id="paperWonPct">0.00%</small></div>
+              <div><span>Lost</span><strong id="paperLost">$0.00</strong><small id="paperLostPct">0.00%</small></div>
+            </div>
+          </div>
+
+          <section class="chart-panel" aria-label="Paper performance">
+            <div class="chart-head"><span>Balance</span><strong id="paperBalance">$100.00</strong></div>
+            <div id="paperChart" class="chart" aria-live="polite"></div>
+            <p id="paperChartDetail" class="chart-detail">No activity yet.</p>
+          </section>
         </div>
-        <nav class="tabs" aria-label="Dashboard pages">
-          <button class="tab-button active" type="button" data-page="tradingPage">Trading</button>
-          <button class="tab-button" type="button" data-page="comparePage">Compare</button>
-        </nav>
-      </header>
-
-      <section id="tradingPage" class="page active">
-        <section class="control-panel" aria-label="Trading fail-safe controls">
-          <div class="section-title">
-            <div>
-              <p class="eyebrow">Kalshi BTC 15-minute</p>
-              <h2>Kalshi Trading</h2>
-            </div>
-            <span id="killSwitchBadge" class="status error">Protected</span>
-          </div>
-
-          <form id="safetyForm" class="form-grid">
-            <input name="mode" type="hidden" value="live" />
-
-            <label>
-              Kalshi model
-              <select name="primaryStrategy">
-                <option value="v1">V1 baseline</option>
-                <option value="v2">V2 adaptive</option>
-                <option value="v3">V3 regime-aware</option>
-              </select>
-            </label>
-
-            <label class="checkbox-label">
-              <input name="killSwitch" type="checkbox" checked />
-              Kill switch on
-            </label>
-
-            <label>
-              Max daily loss $
-              <input name="maxDailyLossUsd" type="number" min="0" step="1" value="25" inputmode="decimal" />
-            </label>
-
-            <label>
-              Max daily loss %
-              <input name="maxDailyLossPct" type="number" min="0" max="100" step="0.5" value="10" inputmode="decimal" />
-            </label>
-
-            <label>
-              Max total loss $
-              <input name="maxTotalLossUsd" type="number" min="0" step="1" value="50" inputmode="decimal" />
-            </label>
-
-            <label>
-              Max total loss %
-              <input name="maxTotalLossPct" type="number" min="0" max="100" step="0.5" value="20" inputmode="decimal" />
-            </label>
-
-            <label>
-              Max stake per trade
-              <input name="maxStakeUsd" type="number" min="0.01" step="0.01" value="5" inputmode="decimal" />
-            </label>
-
-            <label>
-              Max trades per day
-              <input name="maxTradesPerDay" type="number" min="1" step="1" value="12" inputmode="numeric" />
-            </label>
-
-            <label>
-              Start trying seconds left
-              <input name="entrySecondsLeft" type="number" min="1" max="899" step="1" value="180" inputmode="numeric" />
-            </label>
-
-            <label>
-              Stop trying seconds left
-              <input name="minSecondsLeft" type="number" min="1" max="898" step="1" value="60" inputmode="numeric" />
-            </label>
-
-            <button id="saveSafetyButton" class="primary-button" type="submit">Save Kalshi settings only</button>
-          </form>
-        </section>
-
-        <section class="results" aria-label="Kalshi live trading monitor">
-          <div class="headline">
-            <div>
-              <p class="eyebrow">Kalshi BTC 15-minute</p>
-              <p id="tradingNote" class="muted">Loading Kalshi trading status.</p>
-            </div>
-            <div id="workerStatus" class="return-value neutral">--</div>
-          </div>
-
-          <div class="metrics">
-            <div class="metric">
-              <span id="kalshiEquityLabel">Account balance</span>
-              <strong id="currentEquity">--</strong>
-            </div>
-            <div class="metric">
-              <span id="kalshiPredictionLabel">Algorithm prediction</span>
-              <strong id="tradingMode">--</strong>
-            </div>
-          </div>
-
-          <div id="kalshiLiveOddsPanel" class="comparison-panel odds-panel" hidden></div>
-
-          <div class="action-row panel-actions">
-            <button id="startPaperButton" class="secondary-button" type="button">Start Kalshi live trading</button>
-            <button id="stopPaperButton" class="danger-button" type="button">Stop Kalshi live trading</button>
-          </div>
-
-          <div class="table-wrap transaction-window">
-            <table>
-              <thead>
-                <tr>
-                  <th>Time</th>
-                  <th>Market</th>
-                  <th>Side</th>
-                  <th>Status</th>
-                  <th>PnL</th>
-                </tr>
-              </thead>
-              <tbody id="liveTradeRows">
-                <tr>
-                  <td colspan="5" class="empty">No Kalshi worker trades yet.</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <section class="control-panel" aria-label="Polymarket live trading controls">
-          <div class="section-title">
-            <div>
-              <p class="eyebrow">Polymarket BTC 5-minute</p>
-              <h2>Polymarket Trading</h2>
-            </div>
-            <span id="polymarketModeBadge" class="status">Paper</span>
-          </div>
-
-          <form id="polymarketForm" class="form-grid">
-            <input name="mode" type="hidden" value="live" />
-
-            <label>
-              Polymarket model
-              <select name="primaryStrategy">
-                <option value="v1">V1 baseline</option>
-                <option value="v2">V2 adaptive</option>
-                <option value="v3">V3 regime-aware</option>
-              </select>
-            </label>
-
-            <label>
-              Profile
-              <select name="profile">
-                <option value="conservative">Conservative</option>
-                <option value="aggressive">Aggressive</option>
-              </select>
-            </label>
-
-            <label class="checkbox-label">
-              <input name="killSwitch" type="checkbox" checked />
-              Kill switch on
-            </label>
-
-            <label>
-              Max daily loss $
-              <input name="maxDailyLossUsd" type="number" min="0" step="1" value="25" inputmode="decimal" />
-            </label>
-
-            <label>
-              Max daily loss %
-              <input name="maxDailyLossPct" type="number" min="0" max="100" step="0.5" value="10" inputmode="decimal" />
-            </label>
-
-            <label>
-              Max total loss $
-              <input name="maxTotalLossUsd" type="number" min="0" step="1" value="50" inputmode="decimal" />
-            </label>
-
-            <label>
-              Max total loss %
-              <input name="maxTotalLossPct" type="number" min="0" max="100" step="0.5" value="20" inputmode="decimal" />
-            </label>
-
-            <label>
-              Max stake per trade
-              <input name="maxStakeUsd" type="number" min="0.01" step="0.01" value="5" inputmode="decimal" />
-            </label>
-
-            <label>
-              Max trades per day
-              <input name="maxTradesPerDay" type="number" min="1" step="1" value="12" inputmode="numeric" />
-            </label>
-
-            <label>
-              Start trying seconds left
-              <input name="entrySecondsLeft" type="number" min="1" max="299" step="1" value="180" inputmode="numeric" />
-            </label>
-
-            <label>
-              Stop trying seconds left
-              <input name="minSecondsLeft" type="number" min="1" max="298" step="1" value="10" inputmode="numeric" />
-            </label>
-
-            <button id="savePolymarketButton" class="primary-button" type="submit">Save Polymarket settings only</button>
-          </form>
-        </section>
-
-        <section class="results" aria-label="Polymarket live trading monitor">
-          <div class="headline">
-            <div>
-              <p class="eyebrow">Polymarket worker</p>
-              <p id="polymarketNote" class="muted">Loading Polymarket status.</p>
-            </div>
-            <div id="polymarketStatus" class="return-value neutral">--</div>
-          </div>
-
-          <div class="metrics">
-            <div class="metric">
-              <span id="polymarketEquityLabel">Account balance</span>
-              <strong id="polymarketEquity">--</strong>
-            </div>
-            <div class="metric">
-              <span id="polymarketPredictionLabel">Algorithm prediction</span>
-              <strong id="polymarketMode">--</strong>
-            </div>
-          </div>
-
-          <div id="polymarketLiveOddsPanel" class="comparison-panel odds-panel" hidden></div>
-
-          <div id="polymarketPanel" class="comparison-panel" hidden></div>
-
-          <div class="action-row panel-actions">
-            <button id="armPolymarketLiveButton" class="secondary-button" type="button">Start Polymarket live trading</button>
-            <button id="stopPolymarketButton" class="danger-button" type="button">Stop Polymarket live trading</button>
-          </div>
-
-          <div class="table-wrap transaction-window">
-            <table>
-              <thead>
-                <tr>
-                  <th>Time</th>
-                  <th>Market</th>
-                  <th>Side</th>
-                  <th>Status</th>
-                  <th>PnL</th>
-                </tr>
-              </thead>
-              <tbody id="polymarketTradeRows">
-                <tr>
-                  <td colspan="5" class="empty">No Polymarket worker trades yet.</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
       </section>
 
-      <section id="comparePage" class="page">
-        <section class="control-panel" aria-label="Model replay controls">
-          <div class="section-title">
-            <div>
-              <p class="eyebrow">Model testing</p>
-              <h2>Replay</h2>
+      <section id="livePage" class="page" data-environment="live">
+        <div class="workspace">
+          <div class="side-panel">
+            <header class="page-header">
+              <p>Live</p>
+              <span id="liveStatus">Stopped</span>
+            </header>
+
+            <div class="venue-balance" aria-live="polite">
+              <span>Kalshi balance</span>
+              <strong id="liveKalshiBalance">Unavailable</strong>
             </div>
-            <span id="statusBadge" class="status">Idle</span>
-          </div>
 
-          <form id="simForm" class="form-grid">
-            <label>
-              Market interval
-              <select name="intervalMinutes">
-                <option value="15">15 minutes (Kalshi)</option>
-                <option value="5">5 minutes (Polymarket)</option>
-              </select>
-            </label>
+            <form id="liveForm" class="run-form">
+              <label>Model<select name="model"><option value="llama">Llama 3.3</option><option value="nemotron">Nemotron</option><option value="consensus">Both</option></select></label>
+              <label>Money<div class="money-input"><span>$</span><input name="amount" type="number" min="1" step="1" value="100" inputmode="decimal" /></div></label>
+              <label>Start<select name="range"><option value="now">Now</option><option value="14d">14 days ago</option><option value="custom">Choose a date</option></select></label>
+              <label class="date-field" hidden>Date<input name="startDate" type="date" /></label>
+              <button id="liveRunButton" class="run-button" type="submit">Run</button>
+            </form>
 
-            <label>
-              Data mode
-              <select name="dataMode">
-                <option value="historical">Historical backtest</option>
-                <option value="live">Live snapshot</option>
-              </select>
-            </label>
-
-            <label>
-              Profile
-              <select name="profile">
-                <option value="conservative">Conservative</option>
-                <option value="aggressive">Aggressive</option>
-              </select>
-            </label>
-
-            <label>
-              Strategy
-              <select name="strategyMode">
-                <option value="compare">Compare V1/V2/V3</option>
-                <option value="v3">V3 regime-aware</option>
-                <option value="v2">V2 adaptive</option>
-                <option value="v1">V1 baseline</option>
-              </select>
-            </label>
-
-            <label>
-              Lookback days
-              <input name="days" type="number" min="0.25" max="365" step="0.25" value="7" inputmode="decimal" />
-            </label>
-
-            <label>
-              Start time
-              <input name="start" type="datetime-local" />
-            </label>
-
-            <label>
-              End time
-              <input name="end" type="datetime-local" />
-            </label>
-
-            <label>
-              Starting money
-              <input name="startingCash" type="number" min="1" step="1" value="100" inputmode="decimal" />
-            </label>
-
-            <label>
-              Stake per trade
-              <input name="stakeUsd" type="number" min="0.01" step="0.01" value="5" inputmode="decimal" />
-            </label>
-
-            <label>
-              BTC move trigger
-              <input name="minBtcMoveUsd" type="number" min="0" step="1" value="70" inputmode="decimal" />
-            </label>
-
-            <label>
-              Entry seconds left
-              <input name="entrySecondsLeft" type="number" min="1" max="299" step="1" value="120" inputmode="numeric" />
-            </label>
-
-            <label>
-              Virtual contract price
-              <input name="thresholdPrice" type="number" min="0.01" max="0.99" step="0.01" value="0.70" inputmode="decimal" />
-            </label>
-
-            <label>
-              Max trades per day
-              <input name="maxTrades" type="number" min="1" step="1" value="12" inputmode="numeric" />
-            </label>
-
-            <button id="runButton" class="primary-button" type="submit">
-              <span class="play-icon" aria-hidden="true"></span>
-              Run model test
-            </button>
-          </form>
-        </section>
-
-        <section class="results" aria-label="Model replay results">
-          <div class="headline">
-            <div>
-              <p class="eyebrow">Replay result</p>
-              <p id="rangeText" class="muted">Choose settings and run the model test.</p>
-            </div>
-            <div id="returnValue" class="return-value neutral">--</div>
-          </div>
-
-          <div class="metrics">
-            <div class="metric">
-              <span id="metricLabel1">Ending money</span>
-              <strong id="endingCash">--</strong>
-            </div>
-            <div class="metric">
-              <span id="metricLabel2">PnL</span>
-              <strong id="pnl">--</strong>
-            </div>
-            <div class="metric">
-              <span id="metricLabel3">Win rate</span>
-              <strong id="winRate">--</strong>
-            </div>
-            <div class="metric">
-              <span id="metricLabel4">Trades</span>
-              <strong id="trades">--</strong>
+            <p class="live-note">Past dates simulate. Now can place real orders.</p>
+            <div class="totals">
+              <div><span>Won</span><strong id="liveWon">$0.00</strong><small id="liveWonPct">0.00%</small></div>
+              <div><span>Lost</span><strong id="liveLost">$0.00</strong><small id="liveLostPct">0.00%</small></div>
             </div>
           </div>
 
-          <div id="comparisonPanel" class="comparison-panel" hidden></div>
-
-          <div class="table-wrap transaction-window">
-            <table>
-              <thead>
-                <tr>
-                  <th id="tradeHead1">Time</th>
-                  <th id="tradeHead2">Side</th>
-                  <th id="tradeHead3">Move</th>
-                  <th id="tradeHead4">Result</th>
-                  <th id="tradeHead5">PnL</th>
-                </tr>
-              </thead>
-              <tbody id="tradeRows">
-                <tr>
-                  <td colspan="5" class="empty">No model test has been run.</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <section class="control-panel" aria-label="Kalshi compare controls">
-          <div class="section-title">
-            <div>
-              <p class="eyebrow">Kalshi live data</p>
-              <h2>Compare</h2>
-            </div>
-            <span id="compareBadge" class="status">Inactive</span>
-          </div>
-
-          <form id="compareForm" class="form-grid">
-            <label>
-              Primary model
-              <select name="primaryStrategy">
-                <option value="v1">V1 baseline</option>
-                <option value="v2">V2 adaptive</option>
-                <option value="v3">V3 regime-aware</option>
-              </select>
-            </label>
-
-            <fieldset class="strategy-toggle-group">
-              <legend>Compare models</legend>
-              <label class="strategy-toggle">
-                <input name="compareStrategies" type="checkbox" value="v1" checked />
-                V1
-              </label>
-              <label class="strategy-toggle">
-                <input name="compareStrategies" type="checkbox" value="v2" />
-                V2
-              </label>
-              <label class="strategy-toggle">
-                <input name="compareStrategies" type="checkbox" value="v3" checked />
-                V3
-              </label>
-            </fieldset>
-          </form>
-
-          <div class="action-row">
-            <button id="startCompareButton" class="secondary-button" type="button">Start Kalshi compare</button>
-            <button id="stopCompareButton" class="danger-button" type="button">Stop Kalshi compare</button>
-          </div>
-        </section>
-
-        <section class="results" aria-label="Kalshi comparison monitor">
-          <div class="headline">
-            <div>
-              <p class="eyebrow">Kalshi compare</p>
-              <p id="compareWorkerNote" class="muted">Kalshi compare worker is inactive.</p>
-            </div>
-            <div id="compareWorkerStatus" class="return-value neutral">inactive</div>
-          </div>
-
-          <div id="liveComparePanel" class="comparison-panel" hidden></div>
-
-          <div class="table-wrap transaction-window">
-            <table>
-              <thead>
-                <tr>
-                  <th>Time</th>
-                  <th>Market</th>
-                  <th>Model</th>
-                  <th>Side</th>
-                  <th>Status</th>
-                  <th>PnL</th>
-                </tr>
-              </thead>
-              <tbody id="compareTradeRows">
-                <tr>
-                  <td colspan="6" class="empty">No Kalshi compare trades yet.</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <section class="control-panel" aria-label="Polymarket compare controls">
-          <div class="section-title">
-            <div>
-              <p class="eyebrow">Polymarket live data</p>
-              <h2>Compare</h2>
-            </div>
-          </div>
-
-          <form id="polyCompareForm" class="form-grid">
-            <input name="mode" type="hidden" value="paper" />
-
-            <label>
-              Primary model
-              <select name="primaryStrategy">
-                <option value="v1">V1 baseline</option>
-                <option value="v2">V2 adaptive</option>
-                <option value="v3">V3 regime-aware</option>
-              </select>
-            </label>
-
-            <label>
-              Profile
-              <select name="profile">
-                <option value="conservative">Conservative</option>
-                <option value="aggressive">Aggressive</option>
-              </select>
-            </label>
-
-            <fieldset class="strategy-toggle-group">
-              <legend>Compare models</legend>
-              <label class="strategy-toggle">
-                <input name="compareStrategies" type="checkbox" value="v1" checked />
-                V1
-              </label>
-              <label class="strategy-toggle">
-                <input name="compareStrategies" type="checkbox" value="v2" />
-                V2
-              </label>
-              <label class="strategy-toggle">
-                <input name="compareStrategies" type="checkbox" value="v3" />
-                V3
-              </label>
-            </fieldset>
-          </form>
-
-          <div class="action-row">
-            <button id="startPolyCompareButton" class="secondary-button" type="button">Start Polymarket compare</button>
-            <button id="stopPolyCompareButton" class="danger-button" type="button">Stop Polymarket compare</button>
-          </div>
-        </section>
-
-        <section class="results" aria-label="Polymarket comparison monitor">
-          <div class="headline">
-            <div>
-              <p class="eyebrow">Polymarket compare</p>
-              <p id="polyCompareNote" class="muted">Polymarket compare worker is inactive.</p>
-            </div>
-            <div id="polyCompareStatus" class="return-value neutral">inactive</div>
-          </div>
-
-          <div id="polyComparePanel" class="comparison-panel" hidden></div>
-
-          <div class="table-wrap transaction-window">
-            <table>
-              <thead>
-                <tr>
-                  <th>Time</th>
-                  <th>Market</th>
-                  <th>Model</th>
-                  <th>Side</th>
-                  <th>Status</th>
-                  <th>PnL</th>
-                </tr>
-              </thead>
-              <tbody id="polyCompareTradeRows">
-                <tr>
-                  <td colspan="6" class="empty">No Polymarket compare trades yet.</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
+          <section class="chart-panel" aria-label="Live performance">
+            <div class="chart-head"><span>Balance</span><strong id="liveBalance">$100.00</strong></div>
+            <div id="liveChart" class="chart" aria-live="polite"></div>
+            <p id="liveChartDetail" class="chart-detail">No activity yet.</p>
+          </section>
+        </div>
       </section>
     </main>
 
+    <div id="message" class="message" role="status" aria-live="polite"></div>
     <script src="/runtime-config.js"></script>
     <script src="/app.js"></script>
   </body>
