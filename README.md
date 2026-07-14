@@ -104,12 +104,17 @@ The dashboard separates execution environments with the same minimal controls:
 
 - **Paper** selects a model, bankroll, and present or historical start date.
   Historical ranges advance one day at a time, updating the chart after each
-  day while both configured market routes replay concurrently.
+  day while both configured market routes replay concurrently. Present-time
+  Paper uses independent virtual Kalshi and Polymarket workers and can remain
+  active while Live is running.
 - **Live** uses the same controls. A present-time run asks for confirmation and
   then uses configured funded accounts, displays the current Kalshi available
-  cash balance, and treats past dates as read-only fast replays.
+  cash balance, defaults to a $10 risk budget, and treats past dates as
+  read-only fast replays.
 - Both dark-mode pages put controls and won/lost totals on the left, with a
-  chart on the right showing time horizontally and money vertically.
+  chart on the right showing time horizontally and money vertically. A
+  newest-first trade history below the chart shows the market and side, time,
+  and net profit or loss for each completed trade.
 
 Kalshi live trading uses the selected Trading model, the current Kalshi market
 snapshot, and V2 IOC orders capped by `KALSHI_LIVE_MAX_PRICE_SLIPPAGE`.
@@ -145,10 +150,17 @@ to the on-chain pUSD balance for the configured funder wallet. A large allowance
 does not mean spendable cash; it is only token approval.
 
 Worker status, paper balances, open virtual positions, and recent trade history
-are persisted to `runtime/trading_state.json` by default. On Render, the
-Blueprint mounts a persistent disk and writes this file to
-`/var/data/trading_state.json`, so a deploy restart can reload the previous
-state and resume any worker that was active before the restart.
+are written atomically to `runtime/trading_state.json` by default, with a
+`.bak` recovery snapshot. Present-time workers run on the backend, so closing
+the browser does not stop them. On Render, the Blueprint mounts a persistent
+disk and writes these files under `/var/data`, so a deploy, host restart, or
+process crash can reload the last durable state and resume every worker that
+was active before the interruption.
+Live orders are journaled before submission. Kalshi uses the persisted
+`client_order_id` deduplication boundary; if a host dies after an exchange may
+have received an order but before the response is saved, the app blocks another
+entry in that market and records a manual-reconciliation row instead of risking
+a duplicate funded order.
 
 ## Repository Structure
 - `SKILL.md` — skill definition and operating rules
@@ -392,6 +404,11 @@ If it fails, check:
 - Vercel `SIM_API_BASE_URL` exactly matches the Render service URL
 - Render `FRONTEND_ORIGIN` includes the exact Vercel site origin
 - The Live page shows the authenticated Kalshi available-cash balance
+
+When the balance cannot be read, the Live page now shows the exact safe
+configuration or API error below `Unavailable`. For an existing Blueprint
+service, verify that both `KALSHI_API_KEY_ID` and `KALSHI_PRIVATE_KEY` were
+entered manually in Render, then redeploy.
 
 Unified skill control (recommended):
 ```bash

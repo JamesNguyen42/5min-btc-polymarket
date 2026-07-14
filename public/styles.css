@@ -132,6 +132,7 @@ main {
 
 .venue-balance {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   justify-content: space-between;
   gap: 20px;
@@ -152,6 +153,17 @@ main {
   font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.venue-balance small {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.venue-balance small:empty {
+  display: none;
 }
 
 .run-form {
@@ -374,6 +386,85 @@ main {
   font-size: 12px;
 }
 
+.trade-history {
+  margin-top: 64px;
+}
+
+.trade-history-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 20px;
+  padding-bottom: 15px;
+  border-bottom: 1px solid var(--foreground);
+}
+
+.trade-history-head h2 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 400;
+  letter-spacing: -0.03em;
+}
+
+.trade-history-head span,
+.trade-columns,
+.trade-time {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.trade-columns,
+.trade-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 190px 110px;
+  gap: 28px;
+  align-items: center;
+}
+
+.trade-columns {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.trade-columns span:last-child,
+.trade-net {
+  text-align: right;
+}
+
+.trade-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.trade-row {
+  min-height: 58px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.trade-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trade-time,
+.trade-net {
+  font-variant-numeric: tabular-nums;
+}
+
+.trade-net {
+  font-weight: 500;
+}
+
+.trade-empty {
+  padding: 22px 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .message {
   position: fixed;
   right: 20px;
@@ -454,6 +545,35 @@ main {
   .chart,
   .chart svg {
     min-height: 440px;
+  }
+
+  .trade-history {
+    margin-top: 48px;
+  }
+
+  .trade-columns {
+    display: none;
+  }
+
+  .trade-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px 16px;
+    min-height: 68px;
+  }
+
+  .trade-name {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .trade-time {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .trade-net {
+    grid-column: 2;
+    grid-row: 1 / span 2;
   }
 }
 

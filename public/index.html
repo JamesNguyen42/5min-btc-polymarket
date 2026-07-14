@@ -45,6 +45,15 @@
             <p id="paperChartDetail" class="chart-detail">No activity yet.</p>
           </section>
         </div>
+
+        <section class="trade-history" aria-labelledby="paperTradesTitle">
+          <header class="trade-history-head">
+            <h2 id="paperTradesTitle">Past trades</h2>
+            <span id="paperTradeCount">0 trades</span>
+          </header>
+          <div class="trade-columns" aria-hidden="true"><span>Trade</span><span>Time</span><span>Net P/L</span></div>
+          <ol id="paperTrades" class="trade-list"><li class="trade-empty">No completed trades yet.</li></ol>
+        </section>
       </section>
 
       <section id="livePage" class="page" data-environment="live">
@@ -58,11 +67,12 @@
             <div class="venue-balance" aria-live="polite">
               <span>Kalshi balance</span>
               <strong id="liveKalshiBalance">Unavailable</strong>
+              <small id="liveKalshiBalanceError">Checking connection...</small>
             </div>
 
             <form id="liveForm" class="run-form">
               <label>Model<select name="model"><option value="llama">Llama 3.3</option><option value="nemotron">Nemotron</option><option value="consensus">Both</option></select></label>
-              <label>Money<div class="money-input"><span>$</span><input name="amount" type="number" min="1" step="1" value="100" inputmode="decimal" /></div></label>
+              <label>Money<div class="money-input"><span>$</span><input name="amount" type="number" min="1" step="1" value="10" inputmode="decimal" /></div></label>
               <label>Start<select name="range"><option value="now">Now</option><option value="14d">14 days ago</option><option value="custom">Choose a date</option></select></label>
               <label class="date-field" hidden>Date<input name="startDate" type="date" /></label>
               <button id="liveRunButton" class="run-button" type="submit">Run</button>
@@ -76,11 +86,20 @@
           </div>
 
           <section class="chart-panel" aria-label="Live performance">
-            <div class="chart-head"><span>Balance</span><strong id="liveBalance">$100.00</strong></div>
+            <div class="chart-head"><span>Balance</span><strong id="liveBalance">$10.00</strong></div>
             <div id="liveChart" class="chart" aria-live="polite"></div>
             <p id="liveChartDetail" class="chart-detail">No activity yet.</p>
           </section>
         </div>
+
+        <section class="trade-history" aria-labelledby="liveTradesTitle">
+          <header class="trade-history-head">
+            <h2 id="liveTradesTitle">Past trades</h2>
+            <span id="liveTradeCount">0 trades</span>
+          </header>
+          <div class="trade-columns" aria-hidden="true"><span>Trade</span><span>Time</span><span>Net P/L</span></div>
+          <ol id="liveTrades" class="trade-list"><li class="trade-empty">No completed trades yet.</li></ol>
+        </section>
       </section>
     </main>
 

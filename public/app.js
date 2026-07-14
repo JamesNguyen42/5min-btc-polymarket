@@ -4,7 +4,7 @@ const $$ = (selector) => [...document.querySelectorAll(selector)];
 
 const runState = {
   paper: { running: false, range: "now", amount: 100, controller: null, points: [], trades: [] },
-  live: { running: false, range: "now", amount: 100, controller: null, points: [], trades: [] },
+  live: { running: false, range: "now", amount: 10, controller: null, points: [], trades: [] },
 };
 
 let latestTradingState = null;
@@ -55,6 +55,18 @@ function formatTime(value, compact = false) {
     : { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(date);
 }
 
+function formatTradeTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Unknown time";
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
+}
+
 function showMessage(text) {
   const element = $("#message");
   element.textContent = text;
@@ -77,6 +89,9 @@ function pageElements(environment) {
     chart: $(`#${prefix}Chart`),
     detail: $(`#${prefix}ChartDetail`),
     kalshiBalance: environment === "live" ? $("#liveKalshiBalance") : null,
+    kalshiBalanceError: environment === "live" ? $("#liveKalshiBalanceError") : null,
+    trades: $(`#${prefix}Trades`),
+    tradeCount: $(`#${prefix}TradeCount`),
   };
 }
 
@@ -93,7 +108,7 @@ function formValues(environment) {
   const form = pageElements(environment).form;
   return {
     model: String(form.elements.model.value || "llama"),
-    amount: Math.max(1, Number(form.elements.amount.value || 100)),
+    amount: Math.max(1, Number(form.elements.amount.value || (environment === "live" ? 10 : 100))),
     range: String(form.elements.range.value || "now"),
     startDate: form.elements.startDate.value || "",
   };
@@ -123,6 +138,7 @@ function allocationSettings(environment, amount, venue) {
   const maxStakeUsd = Math.min(allocation, Math.max(1, allocation * 0.1));
   const common = {
     mode: environment,
+    liveBudgetUsd: amount,
     primaryStrategy: "v1",
     killSwitch: false,
     maxDailyLossUsd: allocation,
@@ -137,11 +153,29 @@ function allocationSettings(environment, amount, venue) {
   }
   return {
     ...common,
-    paperStartingCash: allocation,
     profile: "conservative",
     compareStrategies: ["v1"],
     entrySecondsLeft: 180,
     minSecondsLeft: 10,
+  };
+}
+
+function paperSettings(amount, totalAmount = amount, venue = "kalshi") {
+  return {
+    mode: "paper",
+    profile: "conservative",
+    paperStartingCash: amount,
+    paperBudgetUsd: totalAmount,
+    primaryStrategy: "v1",
+    compareStrategies: ["v1"],
+    maxDailyLossUsd: amount,
+    maxDailyLossPct: 100,
+    maxTotalLossUsd: amount,
+    maxTotalLossPct: 100,
+    maxStakeUsd: Math.min(amount, Math.max(1, amount * 0.1)),
+    maxTradesPerDay: 100,
+    entrySecondsLeft: 180,
+    minSecondsLeft: venue === "polymarket" ? 10 : 60,
   };
 }
 
@@ -184,6 +218,64 @@ function downsample(points, maximum = 240) {
   return sampled;
 }
 
+function tradeName(trade) {
+  const market = String(
+    trade.title || trade.market || trade.market_slug || trade.marketTicker || trade.eventTicker || "Trade",
+  ).trim();
+  const side = String(trade.side || trade.live_market_side || "").trim().toUpperCase();
+  return side ? `${market} · ${side}` : market;
+}
+
+function tradeTimeMs(trade) {
+  const parsed = Date.parse(tradeTimestamp(trade));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function renderTradeHistory(environment, trades) {
+  const elements = pageElements(environment);
+  const completed = (Array.isArray(trades) ? trades : [])
+    .filter((trade) => !trade.summary_adjustment && Number.isFinite(Number(trade.pnl_usd)))
+    .sort((a, b) => tradeTimeMs(b) - tradeTimeMs(a));
+  const visible = completed.slice(0, 200);
+  elements.tradeCount.textContent = completed.length > visible.length
+    ? `Latest ${visible.length} of ${completed.length}`
+    : `${completed.length} ${completed.length === 1 ? "trade" : "trades"}`;
+  elements.trades.replaceChildren();
+
+  if (!visible.length) {
+    const empty = document.createElement("li");
+    empty.className = "trade-empty";
+    empty.textContent = "No completed trades yet.";
+    elements.trades.append(empty);
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  for (const trade of visible) {
+    const timestampMs = tradeTimeMs(trade);
+    const pnl = Number(trade.pnl_usd);
+    const row = document.createElement("li");
+    row.className = "trade-row";
+
+    const name = document.createElement("span");
+    name.className = "trade-name";
+    name.textContent = tradeName(trade);
+
+    const time = document.createElement("time");
+    time.className = "trade-time";
+    if (timestampMs) time.dateTime = new Date(timestampMs).toISOString();
+    time.textContent = formatTradeTime(timestampMs || tradeTimestamp(trade));
+
+    const net = document.createElement("span");
+    net.className = "trade-net";
+    net.textContent = `${pnl > 0 ? "+" : ""}${money(pnl)}`;
+
+    row.append(name, time, net);
+    fragment.append(row);
+  }
+  elements.trades.append(fragment);
+}
+
 function renderPerformance(environment, amount, trades, points) {
   const elements = pageElements(environment);
   const won = trades.reduce((sum, trade) => sum + Math.max(0, Number(trade.pnl_usd || 0)), 0);
@@ -195,6 +287,7 @@ function renderPerformance(environment, amount, trades, points) {
   elements.lostPct.textContent = percent((lost / amount) * 100);
   elements.balance.textContent = money(current);
   renderChart(environment, points.length ? points : buildCurve(amount, [], new Date(), new Date()));
+  renderTradeHistory(environment, trades);
 }
 
 function renderChart(environment, inputPoints) {
@@ -379,16 +472,18 @@ async function runHistorical(environment, values) {
   }
 }
 
-async function stopWorkers() {
-  await Promise.allSettled([
-    request("/api/trading/stop", { method: "POST", body: "{}" }),
-    request("/api/polymarket/stop", { method: "POST", body: "{}" }),
-  ]);
+async function stopWorkers(environment) {
+  const routes = environment === "paper"
+    ? ["/api/trading/live-compare/stop", "/api/polymarket/paper/stop"]
+    : ["/api/trading/stop", "/api/polymarket/live/stop"];
+  const results = await Promise.allSettled(
+    routes.map((route) => request(route, { method: "POST", body: "{}" })),
+  );
+  const failed = results.find((result) => result.status === "rejected");
+  if (failed) throw failed.reason;
 }
 
 async function startCurrent(environment, values) {
-  const opposite = environment === "paper" ? "live" : "paper";
-  if (runState[opposite].running) throw new Error(`Stop ${opposite} first.`);
   if (environment === "live") {
     const confirmed = window.confirm(`Run live trading with up to ${money(values.amount)} across configured accounts?`);
     if (!confirmed) return;
@@ -396,31 +491,47 @@ async function startCurrent(environment, values) {
 
   setRunning(environment, true, "Starting");
   await saveSelectedModel(environment, values.model);
-  const settings = await Promise.allSettled([
-    request("/api/trading/settings", {
-      method: "POST",
-      body: JSON.stringify(allocationSettings(environment, values.amount, "kalshi")),
-    }),
-    request("/api/polymarket/settings", {
-      method: "POST",
-      body: JSON.stringify(allocationSettings(environment, values.amount, "polymarket")),
-    }),
-  ]);
+  const settings = await Promise.allSettled(environment === "paper"
+    ? [
+      request("/api/trading/live-compare/settings", {
+        method: "POST",
+        body: JSON.stringify(paperSettings(values.amount / 2, values.amount)),
+      }),
+      request("/api/polymarket/paper/settings", {
+        method: "POST",
+        body: JSON.stringify(paperSettings(values.amount / 2, values.amount, "polymarket")),
+      }),
+    ]
+    : [
+      request("/api/trading/settings", {
+        method: "POST",
+        body: JSON.stringify(allocationSettings(environment, values.amount, "kalshi")),
+      }),
+      request("/api/polymarket/settings", {
+        method: "POST",
+        body: JSON.stringify(allocationSettings(environment, values.amount, "polymarket")),
+      }),
+    ]);
   if (settings.every((result) => result.status === "rejected")) {
     setRunning(environment, false);
     throw settings[0].reason;
   }
 
-  const starts = await Promise.allSettled([
-    request(environment === "live" ? "/api/trading/start" : "/api/trading/start", {
-      method: "POST",
-      body: JSON.stringify(environment === "live" ? { confirmLive: "LIVE" } : {}),
-    }),
-    request(environment === "live" ? "/api/polymarket/arm-live" : "/api/polymarket/start", {
-      method: "POST",
-      body: JSON.stringify(environment === "live" ? { confirmLive: "LIVE" } : {}),
-    }),
-  ]);
+  const starts = await Promise.allSettled(environment === "paper"
+    ? [
+      request("/api/trading/live-compare/start", { method: "POST", body: "{}" }),
+      request("/api/polymarket/paper/start", { method: "POST", body: "{}" }),
+    ]
+    : [
+      request("/api/trading/start", {
+        method: "POST",
+        body: JSON.stringify({ confirmLive: "LIVE" }),
+      }),
+      request("/api/polymarket/arm-live", {
+        method: "POST",
+        body: JSON.stringify({ confirmLive: "LIVE" }),
+      }),
+    ]);
   const succeeded = starts.filter((result) => result.status === "fulfilled");
   if (!succeeded.length) {
     setRunning(environment, false);
@@ -447,7 +558,7 @@ async function stopRun(environment) {
   const elements = pageElements(environment);
   elements.button.disabled = true;
   try {
-    await stopWorkers();
+    await stopWorkers(environment);
     setRunning(environment, false);
     await loadStatus();
   } finally {
@@ -458,7 +569,12 @@ async function stopRun(environment) {
 async function handleRun(event, environment) {
   event.preventDefault();
   if (runState[environment].running) {
-    await stopRun(environment);
+    try {
+      await stopRun(environment);
+    } catch (error) {
+      showMessage(`Could not stop ${environment}: ${error.message || String(error)}`);
+      await loadStatus();
+    }
     return;
   }
   const values = formValues(environment);
@@ -472,26 +588,52 @@ async function handleRun(event, environment) {
 }
 
 function settledTrades(state, environment) {
-  const kalshi = (state?.recentTrades || []).filter((trade) =>
-    environment === "live" ? trade.kind === "kalshi_live_settlement" : trade.kind === "paper_settlement",
-  );
+  const kalshi = environment === "live"
+    ? (state?.recentTrades || []).filter((trade) =>
+      ["kalshi_live_settlement", "kalshi_live_order_recovery_pending"].includes(trade.kind),
+    )
+    : [
+      ...(state?.liveCompare?.recentTrades || []).filter((trade) =>
+        trade.kind === "paper_settlement" || trade.status === "won" || trade.status === "lost",
+      ),
+      ...(state?.recentTrades || []).filter((trade) => trade.kind === "paper_settlement"),
+    ];
   const poly = (state?.polymarket?.recentTrades || []).filter((trade) => {
     const settled = trade.status === "won" || trade.status === "lost";
-    return settled && (environment === "live" ? Boolean(trade.live_order_id) : !trade.live_order_id);
+    if (environment === "live" && trade.kind === "polymarket_live_order_recovery_pending") return true;
+    if (!settled) return false;
+    if (environment === "live") return Boolean(trade.live_order_id);
+    const paperStrategy = String(state?.polymarket?.paperStrategy || "v3").toUpperCase();
+    return !trade.live_order_id && String(trade.strategy || "").toUpperCase() === paperStrategy;
   });
-  return [...kalshi, ...poly];
+  const unique = new Map();
+  for (const trade of [...kalshi, ...poly]) {
+    const key = [trade.venue || "KALSHI", trade.market, tradeTimestamp(trade), trade.pnl_usd, trade.live_order_id || ""].join("|");
+    if (!unique.has(key)) unique.set(key, trade);
+  }
+  return [...unique.values()];
 }
 
 function renderCurrentState(state, environment) {
   const runner = runState[environment];
   if (runner.range !== "now") return;
-  const kalshiRunning = state.workerStatus === "active" && state.mode === environment;
-  const polyRunning = state.polymarket?.workerStatus === "active" && state.polymarket?.mode === environment;
-  const running = kalshiRunning || polyRunning;
+  const paperCompareRunning = environment === "paper" && state.liveCompare?.workerStatus === "active";
+  const paperPolyRunning = environment === "paper" && state.polymarket?.paperEnabled === true;
+  const legacyPaperRunning = environment === "paper" && state.workerStatus === "active" && state.mode === "paper";
+  const kalshiRunning = environment === "live" && state.workerStatus === "active" && state.mode === "live";
+  const polyRunning = environment === "live" && state.polymarket?.workerStatus === "active" && state.polymarket?.mode === "live";
+  const configuredAmount = environment === "paper"
+    ? Number(state.paperBudgetUsd)
+    : Number(state.liveBudgetUsd);
+  if (Number.isFinite(configuredAmount) && configuredAmount > 0) runner.amount = configuredAmount;
+  const running = paperCompareRunning || paperPolyRunning || legacyPaperRunning || kalshiRunning || polyRunning;
   setRunning(environment, running);
   if (!running && !runner.points.length) return;
   const trades = settledTrades(state, environment);
   const startedAt = [
+    paperCompareRunning ? state.liveCompare?.startedAt : null,
+    paperPolyRunning ? state.polymarket?.paperStartedAt : null,
+    legacyPaperRunning ? state.startedAt : null,
     kalshiRunning ? state.startedAt : null,
     polyRunning ? state.polymarket?.startedAt : null,
   ].filter(Boolean).sort()[0] || trades.map(tradeTimestamp).sort()[0] || new Date().toISOString();
@@ -502,11 +644,15 @@ function renderCurrentState(state, environment) {
   pageElements(environment).detail.textContent = running ? `Started ${formatTime(startedAt)}.` : "Stopped.";
 }
 
-function renderKalshiBalance(state) {
-  const element = pageElements("live").kalshiBalance;
+function renderKalshiBalance(state, requestError = "") {
+  const elements = pageElements("live");
+  const element = elements.kalshiBalance;
   const value = state?.accountBalance?.availableCash;
   const amount = value === null || value === undefined || value === "" ? NaN : Number(value);
   element.textContent = Number.isFinite(amount) ? money(amount) : "Unavailable";
+  elements.kalshiBalanceError.textContent = Number.isFinite(amount)
+    ? ""
+    : requestError || state?.accountBalance?.error || "Kalshi returned no readable balance.";
 }
 
 async function loadStatus() {
@@ -516,13 +662,15 @@ async function loadStatus() {
     if (!controlsInitialized) {
       $("#paperForm").elements.model.value = state.ai?.paperModel || "llama";
       $("#liveForm").elements.model.value = state.ai?.liveModel || "llama";
+      $("#paperForm").elements.amount.value = Number(state.paperBudgetUsd || 100);
+      $("#liveForm").elements.amount.value = Number(state.liveBudgetUsd || 10);
       controlsInitialized = true;
     }
     renderKalshiBalance(state);
     renderCurrentState(state, "paper");
     renderCurrentState(state, "live");
-  } catch {
-    // Keep the last rendered state when a polling request fails.
+  } catch (error) {
+    renderKalshiBalance(null, `Trading API unavailable: ${error.message || String(error)}`);
   }
 }
 
@@ -550,9 +698,10 @@ for (const environment of ["paper", "live"]) {
   form.elements.range.addEventListener("change", () => updateDateField(form));
   form.addEventListener("submit", (event) => handleRun(event, environment));
   updateDateField(form);
-  const initial = buildCurve(100, [], new Date(), new Date());
+  const initialAmount = environment === "live" ? 10 : 100;
+  const initial = buildCurve(initialAmount, [], new Date(), new Date());
   runState[environment].points = initial;
-  renderPerformance(environment, 100, [], initial);
+  renderPerformance(environment, initialAmount, [], initial);
 }
 
 window.addEventListener("resize", () => {

@@ -4,6 +4,7 @@ services:
     runtime: docker
     plan: starter
     healthCheckPath: /health
+    maxShutdownDelaySeconds: 30
     autoDeployTrigger: commit
     disk:
       name: trading-state
