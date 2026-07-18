@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "action": { "type": "string", "enum": ["BUY", "WAIT"] },
+    "ticker": { "type": ["string", "null"] },
+    "title": { "type": ["string", "null"] },
+    "marketUrl": { "type": ["string", "null"] },
+    "rulesUrl": { "type": ["string", "null"] },
+    "marketCloseTime": { "type": ["string", "null"] },
+    "side": { "type": ["string", "null"], "enum": ["YES", "NO", null] },
+    "contracts": { "type": ["integer", "null"], "minimum": 1 },
+    "recommendedAmountDollars": { "type": ["number", "null"], "minimum": 0 },
+    "quotedAskDollars": { "type": ["number", "null"], "exclusiveMinimum": 0, "exclusiveMaximum": 1 },
+    "quoteObservedAt": { "type": ["string", "null"] },
+    "limitPriceDollars": { "type": ["number", "null"], "exclusiveMinimum": 0, "exclusiveMaximum": 1 },
+    "estimatedProbability": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+    "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+    "takeProfitPriceDollars": { "type": ["number", "null"], "exclusiveMinimum": 0, "exclusiveMaximum": 1 },
+    "stopLossPriceDollars": { "type": ["number", "null"], "exclusiveMinimum": 0, "exclusiveMaximum": 1 },
+    "validForMinutes": { "type": ["integer", "null"], "minimum": 2, "maximum": 5 },
+    "exitWithinMinutes": { "type": ["integer", "null"], "minimum": 1, "maximum": 5 },
+    "entryInstruction": { "type": ["string", "null"] },
+    "exitInstruction": { "type": ["string", "null"] },
+    "rationale": { "type": "string" },
+    "sources": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "properties": {
+          "label": { "type": "string" },
+          "kind": { "type": "string", "enum": ["MARKET", "RULES", "PRIMARY_EVIDENCE"] },
+          "source": { "type": ["string", "null"] },
+          "publishedAt": { "type": ["string", "null"] },
+          "url": { "type": "string" }
+        },
+        "required": ["kind", "label", "source", "publishedAt", "url"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "action",
+    "ticker",
+    "title",
+    "marketUrl",
+    "rulesUrl",
+    "marketCloseTime",
+    "side",
+    "contracts",
+    "recommendedAmountDollars",
+    "quotedAskDollars",
+    "quoteObservedAt",
+    "limitPriceDollars",
+    "estimatedProbability",
+    "confidence",
+    "takeProfitPriceDollars",
+    "stopLossPriceDollars",
+    "validForMinutes",
+    "exitWithinMinutes",
+    "entryInstruction",
+    "exitInstruction",
+    "rationale",
+    "sources"
+  ],
+  "additionalProperties": false
+}

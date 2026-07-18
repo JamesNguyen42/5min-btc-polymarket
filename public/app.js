@@ -6,10 +6,35 @@ const runState = {
   paper: { running: false, range: "now", amount: 100, controller: null, points: [], trades: [] },
   live: { running: false, range: "now", amount: 10, controller: null, points: [], trades: [] },
 };
-
+const kalshiProposalState = {
+  proposal: null,
+  phase: "idle",
+  requestSequence: 0,
+  expiresAt: 0,
+};
 let latestTradingState = null;
 let controlsInitialized = false;
 let messageTimer = null;
+const readOnlyStatsPages = {
+  btc5m: {
+    prefix: "btc5m",
+    pageId: "btcStatsPage",
+    label: "BTC 5m",
+    endpoint: "/api/btc-5m/stats",
+    loaded: false,
+    loading: false,
+    marketEnd: 0,
+  },
+  btc15m: {
+    prefix: "btc15m",
+    pageId: "btcStatsPage",
+    label: "BTC 15m",
+    endpoint: "/api/btc-15m/stats",
+    loaded: false,
+    loading: false,
+    marketEnd: 0,
+  },
+};
 
 function apiPath(path) {
   return `${apiBaseUrl}${path}`;
@@ -45,6 +70,26 @@ function percent(value) {
   const number = Number(value);
   const safe = Number.isFinite(number) ? number : 0;
   return `${safe > 0 ? "+" : ""}${safe.toFixed(2)}%`;
+}
+
+function numericValue(value) {
+  if (value === null || value === undefined || value === "") return NaN;
+  return Number(value);
+}
+
+function probability(value) {
+  const number = numericValue(value);
+  return Number.isFinite(number) ? `${number.toFixed(1)}%` : "--";
+}
+
+function btcPrice(value) {
+  const number = numericValue(value);
+  if (!Number.isFinite(number)) return "--";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  }).format(number);
 }
 
 function formatTime(value, compact = false) {
@@ -92,6 +137,37 @@ function pageElements(environment) {
     kalshiBalanceError: environment === "live" ? $("#liveKalshiBalanceError") : null,
     trades: $(`#${prefix}Trades`),
     tradeCount: $(`#${prefix}TradeCount`),
+  };
+}
+
+function proposalElements() {
+  return {
+    panel: $("#kalshiProposalPanel"),
+    status: $("#kalshiProposalStatus"),
+    details: $("#kalshiProposalDetails"),
+    market: $("#kalshiProposalMarket"),
+    action: $("#kalshiSuggestionAction"),
+    ticker: $("#kalshiProposalTicker"),
+    side: $("#kalshiProposalSide"),
+    limitPrice: $("#kalshiProposalLimitPrice"),
+    contracts: $("#kalshiProposalContracts"),
+    fees: $("#kalshiProposalFees"),
+    maxLoss: $("#kalshiProposalMaxLoss"),
+    quoteTime: $("#kalshiProposalQuoteTime"),
+    entryTiming: $("#kalshiSuggestionEntryTiming"),
+    entryInstruction: $("#kalshiSuggestionEntryInstruction"),
+    exitTiming: $("#kalshiSuggestionExitTiming"),
+    exitInstruction: $("#kalshiSuggestionExitInstruction"),
+    takeProfitRow: $("#kalshiSuggestionTakeProfitRow"),
+    takeProfit: $("#kalshiSuggestionTakeProfit"),
+    stopLossRow: $("#kalshiSuggestionStopLossRow"),
+    stopLoss: $("#kalshiSuggestionStopLoss"),
+    exitByRow: $("#kalshiSuggestionExitByRow"),
+    exitBy: $("#kalshiSuggestionExitBy"),
+    expires: $("#kalshiProposalExpires"),
+    rationale: $("#kalshiProposalRationale"),
+    sources: $("#kalshiProposalSources"),
+    accept: $("#kalshiAcceptProposal"),
   };
 }
 
@@ -484,54 +560,29 @@ async function stopWorkers(environment) {
 }
 
 async function startCurrent(environment, values) {
-  if (environment === "live") {
-    const confirmed = window.confirm(`Run live trading with up to ${money(values.amount)} across configured accounts?`);
-    if (!confirmed) return;
-  }
+  if (environment !== "paper") throw new Error("Live mode only creates proposals for manual placement on Kalshi.");
 
   setRunning(environment, true, "Starting");
   await saveSelectedModel(environment, values.model);
-  const settings = await Promise.allSettled(environment === "paper"
-    ? [
-      request("/api/trading/live-compare/settings", {
-        method: "POST",
-        body: JSON.stringify(paperSettings(values.amount / 2, values.amount)),
-      }),
-      request("/api/polymarket/paper/settings", {
-        method: "POST",
-        body: JSON.stringify(paperSettings(values.amount / 2, values.amount, "polymarket")),
-      }),
-    ]
-    : [
-      request("/api/trading/settings", {
-        method: "POST",
-        body: JSON.stringify(allocationSettings(environment, values.amount, "kalshi")),
-      }),
-      request("/api/polymarket/settings", {
-        method: "POST",
-        body: JSON.stringify(allocationSettings(environment, values.amount, "polymarket")),
-      }),
-    ]);
+  const settings = await Promise.allSettled([
+    request("/api/trading/live-compare/settings", {
+      method: "POST",
+      body: JSON.stringify(paperSettings(values.amount / 2, values.amount)),
+    }),
+    request("/api/polymarket/paper/settings", {
+      method: "POST",
+      body: JSON.stringify(paperSettings(values.amount / 2, values.amount, "polymarket")),
+    }),
+  ]);
   if (settings.every((result) => result.status === "rejected")) {
     setRunning(environment, false);
     throw settings[0].reason;
   }
 
-  const starts = await Promise.allSettled(environment === "paper"
-    ? [
-      request("/api/trading/live-compare/start", { method: "POST", body: "{}" }),
-      request("/api/polymarket/paper/start", { method: "POST", body: "{}" }),
-    ]
-    : [
-      request("/api/trading/start", {
-        method: "POST",
-        body: JSON.stringify({ confirmLive: "LIVE" }),
-      }),
-      request("/api/polymarket/arm-live", {
-        method: "POST",
-        body: JSON.stringify({ confirmLive: "LIVE" }),
-      }),
-    ]);
+  const starts = await Promise.allSettled([
+    request("/api/trading/live-compare/start", { method: "POST", body: "{}" }),
+    request("/api/polymarket/paper/start", { method: "POST", body: "{}" }),
+  ]);
   const succeeded = starts.filter((result) => result.status === "fulfilled");
   if (!succeeded.length) {
     setRunning(environment, false);
@@ -655,6 +706,282 @@ function renderKalshiBalance(state, requestError = "") {
     : requestError || state?.accountBalance?.error || "Kalshi returned no readable balance.";
 }
 
+function proposalValue(proposal, ...names) {
+  for (const name of names) {
+    const value = proposal?.[name];
+    if (value !== null && value !== undefined && value !== "") return value;
+  }
+  return null;
+}
+
+function proposalNumber(proposal, ...names) {
+  const value = proposalValue(proposal, ...names);
+  if (value === null || value === undefined || value === "") return NaN;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : NaN;
+}
+
+function proposalMoney(proposal, ...names) {
+  const number = proposalNumber(proposal, ...names);
+  return Number.isFinite(number) ? money(number) : "--";
+}
+
+function proposalLimitPrice(proposal) {
+  const cents = proposalNumber(proposal, "limitPriceCents", "limit_price_cents");
+  if (Number.isFinite(cents)) return `${cents.toFixed(Number.isInteger(cents) ? 0 : 1)}¢`;
+  const dollars = proposalNumber(proposal, "limitPriceDollars", "limit_price_dollars", "limitPrice", "limit_price", "price");
+  if (!Number.isFinite(dollars)) return "--";
+  if (dollars >= 0 && dollars <= 1) {
+    const value = dollars * 100;
+    return `${value.toFixed(Number.isInteger(value) ? 0 : 1)}¢`;
+  }
+  return money(dollars);
+}
+
+function proposalExpiryTimestamp(proposal) {
+  const parsed = Date.parse(String(proposalValue(proposal, "expiresAt", "expires_at") || ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function proposalTimestamp(proposal, ...names) {
+  const parsed = Date.parse(String(proposalValue(proposal, ...names) || ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function suggestionAction(proposal) {
+  const action = String(proposalValue(proposal, "action", "orderAction", "order_action") || "").toUpperCase();
+  return ["BUY", "SELL"].includes(action) ? action : action === "WAIT" ? "WAIT" : "--";
+}
+
+function suggestionStatus(proposal) {
+  if (!proposal) return "NO SUGGESTION";
+  const status = String(proposalValue(proposal, "status") || "").toLowerCase();
+  if (status === "accepted") return "ACCEPTED";
+  const expiresAt = proposalExpiryTimestamp(proposal);
+  if (expiresAt && expiresAt <= Date.now()) return "EXPIRED";
+  const validFrom = proposalTimestamp(proposal, "validFrom", "valid_from");
+  if (validFrom && validFrom > Date.now()) return "SCHEDULED";
+  if (status === "expired") return "EXPIRED";
+  if (status === "scheduled") return "SCHEDULED";
+  if (status === "live") return "LIVE";
+  if (status === "informational" || suggestionAction(proposal) === "WAIT") return "WAIT";
+  return "NO SUGGESTION";
+}
+
+function proposalCanBeAccepted(proposal) {
+  const id = String(proposalValue(proposal, "id", "proposalId", "proposal_id") || "").trim();
+  if (!id || suggestionStatus(proposal) !== "LIVE") return false;
+  if (!["BUY", "SELL"].includes(suggestionAction(proposal))) return false;
+  if (!["YES", "NO"].includes(String(proposalValue(proposal, "side") || "").toUpperCase())) return false;
+  if (proposalValue(proposal, "canAccept", "can_accept") !== true) return false;
+  return proposalValue(proposal, "orderSubmitted", "order_submitted") !== true;
+}
+
+function proposalPhase(proposal) {
+  return suggestionStatus(proposal).toLowerCase().replace(/\s+/g, "_");
+}
+
+function proposalExpiryText(expiresAt, now = Date.now()) {
+  if (!expiresAt) return "--";
+  const seconds = Math.max(0, Math.ceil((expiresAt - now) / 1000));
+  if (!seconds) return `Expired | ${formatTime(expiresAt)}`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  const remaining = minutes ? `${minutes}m ${String(remainder).padStart(2, "0")}s` : `${remainder}s`;
+  return `${remaining} | ${formatTime(expiresAt)}`;
+}
+
+function suggestionTiming(value) {
+  if (value === null || value === undefined || value === "") return "--";
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? formatTime(parsed) : String(value);
+}
+
+function optionalSuggestionField(row, element, value, formatter = String) {
+  const present = value !== null && value !== undefined && value !== "";
+  row.hidden = !present;
+  element.textContent = present ? formatter(value) : "--";
+}
+
+function updateProposalControls() {
+  const elements = proposalElements();
+  const busy = ["loading", "accepting"].includes(kalshiProposalState.phase);
+  elements.panel.setAttribute("aria-busy", String(busy));
+  elements.accept.disabled = busy || !proposalCanBeAccepted(kalshiProposalState.proposal);
+  elements.accept.textContent = kalshiProposalState.phase === "accepting"
+    ? "Recording acceptance…"
+    : "Accept suggestion";
+}
+
+function renderKalshiProposal(proposal, { phase = "" } = {}) {
+  const elements = proposalElements();
+  kalshiProposalState.proposal = proposal && typeof proposal === "object" ? proposal : null;
+  kalshiProposalState.phase = phase || proposalPhase(kalshiProposalState.proposal);
+  kalshiProposalState.expiresAt = proposalExpiryTimestamp(kalshiProposalState.proposal);
+  const status = suggestionStatus(kalshiProposalState.proposal);
+  elements.status.textContent = status;
+  elements.details.hidden = !kalshiProposalState.proposal || status === "NO SUGGESTION";
+
+  if (elements.details.hidden) {
+    elements.expires.removeAttribute("datetime");
+    updateProposalControls();
+    return;
+  }
+
+  const current = kalshiProposalState.proposal;
+  const title = proposalValue(current, "title", "marketTitle", "market_title", "market") || "Untitled Kalshi market";
+  const ticker = proposalValue(current, "ticker", "marketTicker", "market_ticker") || "--";
+  const side = String(proposalValue(current, "side") || "--").toUpperCase();
+  const contracts = proposalNumber(current, "contracts", "count");
+  const actionable = ["BUY", "SELL"].includes(suggestionAction(current));
+  const quoteObservedAt = actionable ? proposalValue(
+    current,
+    "quoteObservedAt",
+    "quote_observed_at",
+    "sourceDecisionTimestamp",
+    "source_decision_timestamp",
+    "generatedAt",
+    "generated_at",
+    "createdAt",
+    "created_at",
+  ) : null;
+
+  elements.market.textContent = String(title);
+  elements.action.textContent = suggestionAction(current);
+  elements.ticker.textContent = String(ticker);
+  elements.side.textContent = side;
+  elements.limitPrice.textContent = proposalLimitPrice(current);
+  elements.contracts.textContent = Number.isFinite(contracts) ? new Intl.NumberFormat("en-US").format(contracts) : "--";
+  elements.fees.textContent = proposalMoney(
+    current,
+    "estimatedFeeDollars",
+    "estimated_fee_dollars",
+    "estimatedFeeUsd",
+    "estimated_fee_usd",
+    "estimatedFeesUsd",
+    "estimated_fees_usd",
+  );
+  elements.maxLoss.textContent = proposalMoney(current, "maxLossDollars", "max_loss_dollars", "maxLossUsd", "max_loss_usd");
+  elements.quoteTime.textContent = quoteObservedAt ? formatTime(quoteObservedAt) : "--";
+  elements.entryTiming.textContent = actionable
+    ? suggestionTiming(proposalValue(current, "entryTiming", "entry_timing", "validFrom", "valid_from"))
+    : "--";
+  elements.entryInstruction.textContent = String(proposalValue(current, "entryInstruction", "entry_instruction") || "--");
+  elements.exitTiming.textContent = suggestionTiming(proposalValue(current, "exitTiming", "exit_timing", "exitBy", "exit_by"));
+  elements.exitInstruction.textContent = String(proposalValue(current, "exitInstruction", "exit_instruction") || "--");
+  optionalSuggestionField(
+    elements.takeProfitRow,
+    elements.takeProfit,
+    proposalValue(current, "takeProfitPriceDollars", "take_profit_price_dollars", "takeProfit", "take_profit"),
+    (value) => proposalLimitPrice({ limitPriceDollars: value }),
+  );
+  optionalSuggestionField(
+    elements.stopLossRow,
+    elements.stopLoss,
+    proposalValue(current, "stopLossPriceDollars", "stop_loss_price_dollars", "stopLoss", "stop_loss"),
+    (value) => proposalLimitPrice({ limitPriceDollars: value }),
+  );
+  optionalSuggestionField(
+    elements.exitByRow,
+    elements.exitBy,
+    proposalValue(current, "exitBy", "exit_by"),
+    suggestionTiming,
+  );
+  elements.expires.textContent = proposalExpiryText(kalshiProposalState.expiresAt);
+  if (kalshiProposalState.expiresAt) {
+    elements.expires.setAttribute("datetime", new Date(kalshiProposalState.expiresAt).toISOString());
+  } else {
+    elements.expires.removeAttribute("datetime");
+  }
+  elements.rationale.textContent = String(proposalValue(current, "rationale", "reasoning", "reason") || "No rationale was provided.");
+  elements.sources.replaceChildren();
+  const sources = proposalValue(current, "sources", "headlines");
+  if (!Array.isArray(sources) || !sources.length) {
+    const empty = document.createElement("li");
+    empty.textContent = "No qualifying sources were attached to this proposal.";
+    elements.sources.append(empty);
+  } else {
+    for (const source of sources) {
+      const item = document.createElement("li");
+      const title = String(source?.label || source?.title || source?.source || "Research source");
+      const titleElement = document.createElement("span");
+      titleElement.textContent = title;
+      item.append(titleElement);
+      const metadata = [source?.source, source?.publishedAt ? formatTime(source.publishedAt) : ""].filter(Boolean).join(" | ");
+      if (metadata) {
+        const detail = document.createElement("small");
+        detail.textContent = metadata;
+        item.append(detail);
+      }
+      elements.sources.append(item);
+    }
+  }
+  updateProposalControls();
+}
+
+function updateKalshiProposalTiming() {
+  const proposal = kalshiProposalState.proposal;
+  if (!proposal) return;
+  const elements = proposalElements();
+  const actionable = ["BUY", "SELL"].includes(suggestionAction(proposal));
+  elements.expires.textContent = proposalExpiryText(kalshiProposalState.expiresAt);
+  elements.entryTiming.textContent = actionable
+    ? suggestionTiming(proposalValue(proposal, "entryTiming", "entry_timing", "validFrom", "valid_from"))
+    : "--";
+  elements.exitTiming.textContent = suggestionTiming(proposalValue(proposal, "exitTiming", "exit_timing", "exitBy", "exit_by"));
+  elements.status.textContent = suggestionStatus(proposal);
+  if (kalshiProposalState.phase !== "accepting") kalshiProposalState.phase = proposalPhase(proposal);
+  updateProposalControls();
+}
+
+async function loadCurrentKalshiProposal({ announceError = false } = {}) {
+  if (kalshiProposalState.phase === "accepting") return;
+  const sequence = ++kalshiProposalState.requestSequence;
+  if (!kalshiProposalState.proposal) renderKalshiProposal(null, { phase: "loading" });
+  try {
+    const data = await request("/api/proposals/current");
+    if (sequence !== kalshiProposalState.requestSequence) return;
+    renderKalshiProposal(data?.proposal || null);
+  } catch (error) {
+    if (sequence !== kalshiProposalState.requestSequence) return;
+    const message = error.message || String(error);
+    kalshiProposalState.phase = "error";
+    updateProposalControls();
+    if (announceError) showMessage(`Could not load a proposal: ${message}`);
+  }
+}
+
+async function acceptKalshiProposal() {
+  const current = kalshiProposalState.proposal;
+  if (!proposalCanBeAccepted(current)) {
+    renderKalshiProposal(current);
+    return;
+  }
+  const id = String(proposalValue(current, "id", "proposalId", "proposal_id"));
+  const sequence = ++kalshiProposalState.requestSequence;
+  renderKalshiProposal(current, { phase: "accepting" });
+  try {
+    const data = await request(`/api/proposals/${encodeURIComponent(id)}/accept`, {
+      method: "POST",
+      body: JSON.stringify({ confirmProposalId: id, acknowledgeLocalAcceptance: true }),
+    });
+    if (sequence !== kalshiProposalState.requestSequence) return;
+    const accepted = data?.proposal;
+    const acceptedId = String(proposalValue(accepted, "id", "proposalId", "proposal_id") || "");
+    if (!accepted || acceptedId !== id) throw new Error("The server did not confirm the selected proposal.");
+    if (data?.orderSubmitted === true || proposalValue(accepted, "orderSubmitted", "order_submitted") === true) {
+      throw new Error("Acceptance response incorrectly reported an exchange order.");
+    }
+    renderKalshiProposal(accepted);
+    showMessage("Suggestion accepted locally. No trade was placed.");
+  } catch (error) {
+    if (sequence !== kalshiProposalState.requestSequence) return;
+    const message = error.message || String(error);
+    renderKalshiProposal(current, { phase: "error" });
+    showMessage(`Could not record acceptance: ${message}`);
+  }
+}
+
 async function loadStatus() {
   try {
     const state = await request("/api/trading/status");
@@ -681,23 +1008,133 @@ function updateDateField(form) {
   form.elements.startDate.required = custom;
 }
 
+function formatStatus(value) {
+  const text = String(value || "").trim();
+  if (!text) return "--";
+  return text.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function statsElement(page, suffix) {
+  return $(`#${page.prefix}${suffix}`);
+}
+
+function readOnlyStatsPageActive() {
+  return Object.values(readOnlyStatsPages).some((page) => $(`#${page.pageId}`).classList.contains("active"));
+}
+
+function renderStatsCountdown(page) {
+  const countdown = statsElement(page, "Countdown");
+  if (!Number.isFinite(page.marketEnd) || page.marketEnd <= 0) {
+    countdown.textContent = "--:--";
+    return;
+  }
+  const seconds = Math.max(0, Math.ceil((page.marketEnd - Date.now()) / 1000));
+  const minutes = Math.floor(seconds / 60);
+  countdown.textContent = `${String(minutes).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function renderReadOnlyStats(page, report) {
+  const signal = report?.signal || report?.summary || {};
+  const up = numericValue(signal.up_probability);
+  const down = numericValue(signal.down_probability);
+  const side = String(signal.side || "").toUpperCase();
+  const predictedSide = side || (Number.isFinite(up) && Number.isFinite(down)
+    ? (up === down ? "EVEN" : up > down ? "UP" : "DOWN")
+    : "NO DATA");
+  const action = String(signal.action || "NO_DATA").toUpperCase();
+  const upWidth = Number.isFinite(up) ? Math.max(0, Math.min(100, up)) : 50;
+  const downWidth = Number.isFinite(down) ? Math.max(0, Math.min(100, down)) : 50;
+  const move = numericValue(signal.move_at_entry_usd);
+  const threshold = numericValue(signal.dynamic_min_btc_move_usd);
+  const confidence = numericValue(signal.confidence);
+  const samples = numericValue(signal.probability_sample_count);
+  const observedAt = report.generated_at || report.observed_at;
+
+  statsElement(page, "Prediction").textContent = predictedSide;
+  statsElement(page, "Prediction").dataset.direction = predictedSide.toLowerCase();
+  statsElement(page, "UpProbability").textContent = probability(up);
+  statsElement(page, "DownProbability").textContent = probability(down);
+  statsElement(page, "UpBar").style.width = `${upWidth}%`;
+  statsElement(page, "DownBar").style.width = `${downWidth}%`;
+  statsElement(page, "PredictionDetail").textContent = Number.isFinite(samples)
+    ? `Based on ${samples} similar completed intervals from yesterday and today.`
+    : report.probability_note || "Probability context is not available yet.";
+  statsElement(page, "Signal").textContent = side ? `${side} · ${action}` : action;
+  statsElement(page, "SignalStatus").textContent = formatStatus(signal.status);
+  statsElement(page, "BtcNow").textContent = btcPrice(signal.latest_btc);
+  statsElement(page, "BtcOpen").textContent = btcPrice(signal.interval_open_btc);
+  statsElement(page, "Move").textContent = Number.isFinite(move) ? `${move >= 0 ? "+" : "−"}${money(Math.abs(move))}` : "--";
+  statsElement(page, "Move").dataset.direction = Number.isFinite(move) ? (move > 0 ? "up" : move < 0 ? "down" : "even") : "";
+  statsElement(page, "MoveThreshold").textContent = Number.isFinite(threshold) ? `Trigger ${money(threshold)}` : "Trigger --";
+  statsElement(page, "Confidence").textContent = Number.isFinite(confidence) ? `${confidence.toFixed(2)}×` : "--";
+  statsElement(page, "Samples").textContent = Number.isFinite(samples) ? new Intl.NumberFormat("en-US").format(samples) : "--";
+  statsElement(page, "Source").textContent = report.prediction_basis || report.data_source || "V1 algorithm using Coinbase candles only";
+  statsElement(page, "Safety").textContent = report.stale
+    ? `Algorithm only · showing cached data${report.refresh_error ? ` · ${report.refresh_error}` : ""}`
+    : "Algorithm only · no venue data";
+  statsElement(page, "Updated").textContent = observedAt ? `Updated ${formatTime(observedAt)}` : "Snapshot loaded";
+
+  const marketEnd = Date.parse(report.market_end || "");
+  page.marketEnd = Number.isFinite(marketEnd) ? marketEnd : 0;
+  statsElement(page, "Window").textContent = page.marketEnd ? `Ends ${formatTime(page.marketEnd)}` : "No active interval";
+  renderStatsCountdown(page);
+}
+
+async function loadReadOnlyStats(page, { announceError = true } = {}) {
+  if (page.loading) return;
+  page.loading = true;
+  const button = statsElement(page, "Refresh");
+  button.disabled = true;
+  button.textContent = "Refreshing";
+  statsElement(page, "Updated").textContent = page.loaded ? "Refreshing snapshot" : "Loading live snapshot";
+  try {
+    const report = await request(page.endpoint);
+    renderReadOnlyStats(page, report);
+    page.loaded = true;
+  } catch (error) {
+    statsElement(page, "Updated").textContent = "Snapshot unavailable";
+    statsElement(page, "Prediction").textContent = "UNAVAILABLE";
+    statsElement(page, "SignalStatus").textContent = error.message || String(error);
+    if (announceError) showMessage(`${page.label} stats unavailable: ${error.message || String(error)}`);
+  } finally {
+    page.loading = false;
+    button.disabled = false;
+    button.textContent = "Refresh";
+  }
+}
+
 $$('.nav-button').forEach((button) => {
   button.addEventListener("click", () => {
     $$('.nav-button').forEach((item) => item.classList.toggle("active", item === button));
     $$('.page').forEach((page) => page.classList.toggle("active", page.id === button.dataset.page));
+    const statsPages = Object.values(readOnlyStatsPages).filter((page) => page.pageId === button.dataset.page);
+    if (statsPages.length) {
+      for (const page of statsPages) loadReadOnlyStats(page);
+      return;
+    }
     const environment = button.dataset.page === "paperPage" ? "paper" : "live";
+    if (environment === "live") loadCurrentKalshiProposal({ announceError: true });
     renderChart(environment, runState[environment].points.length ? runState[environment].points : buildCurve(runState[environment].amount, [], new Date(), new Date()));
   });
 });
 
+for (const page of Object.values(readOnlyStatsPages)) {
+  statsElement(page, "Refresh").addEventListener("click", () => loadReadOnlyStats(page));
+}
+
+proposalElements().accept.addEventListener("click", acceptKalshiProposal);
+$("#liveForm").addEventListener("submit", (event) => event.preventDefault());
+
 for (const environment of ["paper", "live"]) {
   const form = pageElements(environment).form;
-  const today = new Date().toISOString().slice(0, 10);
-  form.elements.startDate.max = today;
-  form.elements.startDate.value = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  form.elements.range.addEventListener("change", () => updateDateField(form));
-  form.addEventListener("submit", (event) => handleRun(event, environment));
-  updateDateField(form);
+  if (environment === "paper") {
+    const today = new Date().toISOString().slice(0, 10);
+    form.elements.startDate.max = today;
+    form.elements.startDate.value = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    form.elements.range.addEventListener("change", () => updateDateField(form));
+    form.addEventListener("submit", (event) => handleRun(event, environment));
+    updateDateField(form);
+  }
   const initialAmount = environment === "live" ? 10 : 100;
   const initial = buildCurve(initialAmount, [], new Date(), new Date());
   runState[environment].points = initial;
@@ -708,5 +1145,21 @@ window.addEventListener("resize", () => {
   for (const environment of ["paper", "live"]) renderChart(environment, runState[environment].points);
 });
 
+renderKalshiProposal(null, { phase: "loading" });
+loadCurrentKalshiProposal();
 loadStatus();
-setInterval(loadStatus, 3000);
+setInterval(() => {
+  if (!readOnlyStatsPageActive()) loadStatus();
+}, 3000);
+setInterval(() => {
+  updateKalshiProposalTiming();
+  for (const page of Object.values(readOnlyStatsPages)) renderStatsCountdown(page);
+}, 1000);
+setInterval(() => {
+  loadCurrentKalshiProposal();
+}, 5000);
+setInterval(() => {
+  for (const page of Object.values(readOnlyStatsPages)) {
+    if ($(`#${page.pageId}`).classList.contains("active")) loadReadOnlyStats(page, { announceError: false });
+  }
+}, 15000);

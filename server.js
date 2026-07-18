@@ -5,6 +5,8 @@ const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 const { createAiEngine } = require("./lib/ai-engine");
+const { createLocalOriginPolicy } = require("./lib/local-origin-policy");
+const { createTradeProposalStore } = require("./lib/trade-proposals");
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
@@ -17,8 +19,19 @@ const TRADING_STATE_FILE = path.isAbsolute(process.env.TRADING_STATE_FILE || "")
   ? process.env.TRADING_STATE_FILE
   : path.resolve(ROOT, process.env.TRADING_STATE_FILE || path.join("runtime", "trading_state.json"));
 const TRADING_STATE_BACKUP_FILE = `${TRADING_STATE_FILE}.bak`;
+const PROPOSAL_RUNTIME_DIR = path.isAbsolute(process.env.PROPOSAL_RUNTIME_DIR || "")
+  ? process.env.PROPOSAL_RUNTIME_DIR
+  : path.resolve(ROOT, process.env.PROPOSAL_RUNTIME_DIR || path.join("runtime", "trade-proposals"));
+const tradeProposalStore = createTradeProposalStore({
+  runtimeDir: PROPOSAL_RUNTIME_DIR,
+});
 const START_PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || (process.env.RENDER ? "0.0.0.0" : "127.0.0.1");
+// This build is an advisory dashboard. Environment variables cannot arm orders
+// or restart an order worker; manual execution happens outside this app.
+const KALSHI_FUNDED_TRADING_ENABLED = false;
+const KALSHI_LIVE_AUTO_RESUME_ENABLED = false;
+const POLYMARKET_FUNDED_TRADING_ENABLED = false;
 const KALSHI_API_PREFIX = "/trade-api/v2";
 const KALSHI_BTC15M_SERIES = "KXBTC15M";
 const PAPER_POLL_MS = 1000;
@@ -35,6 +48,7 @@ const KALSHI_MARKET_CACHE_MS = 12000;
 const KALSHI_SETTLEMENT_CACHE_MS = 30000;
 const POLYMARKET_MARKET_CACHE_MS = 3000;
 const POLYMARKET_SETTLEMENT_CACHE_MS = 30000;
+const BTC_STATS_CACHE_MS = 15000;
 const KALSHI_ENTRY_SECONDS_LEFT = 180;
 const KALSHI_MIN_SECONDS_LEFT = 60;
 const PAPER_TRIGGER_PRICE = 0.7;
@@ -60,6 +74,7 @@ const FRONTEND_ORIGINS = String(process.env.FRONTEND_ORIGIN || "")
 if (process.env.RENDER && FRONTEND_ORIGINS.length === 0) {
   throw new Error("FRONTEND_ORIGIN must be set to the Vercel site origin on Render.");
 }
+const localOriginPolicy = createLocalOriginPolicy(FRONTEND_ORIGINS);
 const currentBtc15mMarketCache = {
   expiresAt: 0,
   promise: null,
@@ -67,6 +82,16 @@ const currentBtc15mMarketCache = {
 };
 const kalshiMarketByTickerCache = new Map();
 const polymarketBtc5mMarketCache = {
+  expiresAt: 0,
+  promise: null,
+  value: null,
+};
+const btc5mStatsCache = {
+  expiresAt: 0,
+  promise: null,
+  value: null,
+};
+const btc15mStatsCache = {
   expiresAt: 0,
   promise: null,
   value: null,
@@ -831,18 +856,7 @@ function loadLocalEnv(filePath) {
 }
 
 function corsHeaders(req) {
-  const origin = req.headers.origin;
-  const allowOrigin =
-    origin && (FRONTEND_ORIGINS.length === 0 || FRONTEND_ORIGINS.includes(origin)) ? origin : FRONTEND_ORIGINS[0];
-  const headers = {
-    "access-control-allow-methods": "GET,POST,OPTIONS",
-    "access-control-allow-headers": "content-type",
-  };
-  if (allowOrigin) {
-    headers["access-control-allow-origin"] = allowOrigin;
-    headers.vary = "Origin";
-  }
-  return headers;
+  return localOriginPolicy.corsHeaders(req);
 }
 
 function send(req, res, status, body, type = "application/json; charset=utf-8", extraHeaders = {}) {
@@ -1150,11 +1164,7 @@ function addTrade(trade) {
   saveTradingState();
 }
 
-function kalshiLiveCredentialsConfigured() {
-  return !kalshiLiveModeConfiguredError();
-}
-
-function kalshiLiveModeConfiguredError() {
+function kalshiCredentialConfigError() {
   if (!process.env.KALSHI_API_KEY_ID) return "KALSHI_API_KEY_ID is not configured";
   try {
     if (!kalshiPrivateKeyPem()) return "KALSHI_PRIVATE_KEY is not configured";
@@ -1163,6 +1173,17 @@ function kalshiLiveModeConfiguredError() {
     return `Kalshi private key is invalid or unreadable: ${err.message || String(err)}`;
   }
   return "";
+}
+
+function kalshiReadCredentialsConfigured() {
+  return !kalshiCredentialConfigError();
+}
+
+function kalshiLiveModeConfiguredError() {
+  if (!KALSHI_FUNDED_TRADING_ENABLED) {
+    return "Funded Kalshi trading is disabled in this advisory-only build";
+  }
+  return kalshiCredentialConfigError();
 }
 
 function fixedDollar(value) {
@@ -1226,8 +1247,9 @@ function kalshiLiveOrderBudget(signal, availableCash) {
   const suggested = dollars(signal?.suggested_stake_usd, null);
   const fallback = Number(tradingState.limits.maxStakeUsd || 0);
   const target = suggested !== null && suggested > 0 ? suggested : fallback;
+  const configuredLiveBudget = Math.max(0, Number(tradingState.liveBudgetUsd || 0));
   const spendableCash = Math.max(0, Number(availableCash || 0) - KALSHI_LIVE_CASH_BUFFER_USD);
-  return Math.min(target, fallback, spendableCash);
+  return Math.min(target, fallback, configuredLiveBudget, spendableCash);
 }
 
 async function fetchKalshiOrderbook(ticker) {
@@ -1313,6 +1335,9 @@ function isKalshiLiquidityError(err) {
 }
 
 async function placeKalshiLiveOrder({ ticker, signalSide, cost, marketPrice, clientOrderId, onBeforeSubmit }) {
+  if (!KALSHI_FUNDED_TRADING_ENABLED) {
+    throw new Error("Funded Kalshi order submission is disabled in this advisory-only build");
+  }
   const price = kalshiPriceDollars(marketPrice, null);
   if (!ticker) throw new Error("Kalshi market ticker is required");
   const skipReason = kalshiLivePriceSkipReason({ ticker, signalSide, price });
@@ -1424,7 +1449,7 @@ async function fetchKalshiBalanceSnapshot() {
 }
 
 async function syncKalshiAccountBalance({ force = false } = {}) {
-  const configError = kalshiLiveModeConfiguredError();
+  const configError = kalshiCredentialConfigError();
   if (configError) {
     const snapshot = {
       ...createAccountBalance("Kalshi portfolio balance"),
@@ -3023,6 +3048,9 @@ async function syncPolymarketAccountBalance({ force = false } = {}) {
 }
 
 function placePolymarketLiveOrder(input, onBeforeSubmit) {
+  if (!POLYMARKET_FUNDED_TRADING_ENABLED) {
+    throw new Error("Funded Polymarket trading is disabled in this advisory-only build");
+  }
   return new Promise((resolve, reject) => {
     if (typeof onBeforeSubmit === "function") onBeforeSubmit(input);
     const child = spawn(process.execPath, [path.join("scripts", "polymarket_market_order.mjs")], {
@@ -3489,6 +3517,9 @@ function stopPolymarketLiveWorker(reason = "Polymarket live trading stopped by u
 }
 
 async function armPolymarketLive() {
+  if (!POLYMARKET_FUNDED_TRADING_ENABLED) {
+    throw new Error("Funded Polymarket trading is disabled in this advisory-only build");
+  }
   if (!aiEngine.state.configured || !aiEngine.state.enabled) {
     throw new Error("Llama/Nemotron AI must be configured and enabled before live trading can start");
   }
@@ -3543,8 +3574,15 @@ function resumePaperWorkerAfterRestart() {
     return;
   }
   if (mode === "live") {
+    if (!KALSHI_LIVE_AUTO_RESUME_ENABLED) {
+      tradingState.killSwitch = true;
+      stopPaperWorker(
+        "Kalshi live worker was not resumed because this is an advisory-only build",
+      );
+      return;
+    }
     const configError = kalshiLiveModeConfiguredError();
-    if (configError && !tradingState.pendingLiveOrder) {
+    if (configError) {
       stopPaperWorker(`Kalshi live worker was not resumed after restart: ${configError}`);
       return;
     }
@@ -3746,6 +3784,77 @@ function runSimulator(args) {
   });
 }
 
+async function fetchReadOnlyBtcStats({ intervalMinutes, cache, entrySecondsLeft, minSecondsLeft }) {
+  const now = Date.now();
+  if (cache.value && cache.expiresAt > now) {
+    return { ...cache.value, cached: true };
+  }
+  if (cache.promise) return cache.promise;
+
+  const input = {
+    profile: "conservative",
+    strategyMode: "v1",
+    dataMode: "live",
+    intervalMinutes,
+    startingCash: 100,
+    stakeUsd: 5,
+    thresholdPrice: 0.7,
+    minBtcMoveUsd: 70,
+    entrySecondsLeft,
+    minSecondsLeft,
+    maxTrades: 12,
+    primaryStrategy: "v1",
+  };
+
+  cache.promise = runSimulator(buildSimArgs(input))
+    .then((report) => {
+      const result = {
+        ...report,
+        read_only: true,
+        trading_enabled: false,
+        venue_market_data_enabled: false,
+        prediction_basis: "V1 algorithm using Coinbase BTC-USD candles only",
+        generated_at: new Date().toISOString(),
+      };
+      cache.value = result;
+      cache.expiresAt = Date.now() + BTC_STATS_CACHE_MS;
+      return result;
+    })
+    .catch((err) => {
+      if (cache.value) {
+        return {
+          ...cache.value,
+          cached: true,
+          stale: true,
+          refresh_error: err.message || String(err),
+        };
+      }
+      throw err;
+    })
+    .finally(() => {
+      cache.promise = null;
+    });
+  return cache.promise;
+}
+
+function fetchBtc5mStats() {
+  return fetchReadOnlyBtcStats({
+    intervalMinutes: 5,
+    cache: btc5mStatsCache,
+    entrySecondsLeft: 120,
+    minSecondsLeft: 15,
+  });
+}
+
+function fetchBtc15mStats() {
+  return fetchReadOnlyBtcStats({
+    intervalMinutes: 15,
+    cache: btc15mStatsCache,
+    entrySecondsLeft: KALSHI_ENTRY_SECONDS_LEFT,
+    minSecondsLeft: KALSHI_MIN_SECONDS_LEFT,
+  });
+}
+
 function publicPath(reqUrl) {
   const parsed = new URL(reqUrl, "http://localhost");
   const pathname = parsed.pathname === "/" ? "/index.html" : parsed.pathname;
@@ -3756,6 +3865,11 @@ function publicPath(reqUrl) {
 
 async function handle(req, res) {
   if (req.method === "OPTIONS") {
+    const pathname = new URL(req.url, "http://localhost").pathname;
+    if (/^\/api\/proposals\/[^/]+\/accept$/.test(pathname) && !localOriginPolicy.isAllowedMutation(req)) {
+      sendJson(req, res, 403, { error: "cross-site proposal acceptance is not allowed" });
+      return;
+    }
     send(req, res, 204, "");
     return;
   }
@@ -3765,8 +3879,83 @@ async function handle(req, res) {
     return;
   }
 
+  if (req.method === "GET" && req.url === "/api/proposals/current") {
+    try {
+      sendJson(req, res, 200, { proposal: tradeProposalStore.current() });
+    } catch (err) {
+      sendJson(req, res, 500, { error: err.message || String(err) });
+    }
+    return;
+  }
+
+  const proposalAcceptMatch = new URL(req.url, "http://localhost").pathname.match(/^\/api\/proposals\/([^/]+)\/accept$/);
+  if (req.method === "POST" && proposalAcceptMatch) {
+    if (!localOriginPolicy.isAllowedMutation(req)) {
+      sendJson(req, res, 403, {
+        accepted: false,
+        recordedOnly: true,
+        orderSubmitted: false,
+        error: "cross-site proposal acceptance is not allowed",
+      });
+      return;
+    }
+    try {
+      const proposalId = decodeURIComponent(proposalAcceptMatch[1]);
+      const raw = await readBody(req);
+      const input = raw ? JSON.parse(raw) : {};
+      const allowedFields = new Set(["confirmProposalId", "acknowledgeLocalAcceptance"]);
+      if (Object.keys(input).some((key) => !allowedFields.has(key))) {
+        throw new Error("Acceptance may contain only the suggestion ID and local-acceptance acknowledgment");
+      }
+      const proposal = tradeProposalStore.accept(proposalId, input);
+      sendJson(req, res, 200, {
+        accepted: true,
+        recordedOnly: true,
+        orderSubmitted: false,
+        message: "Suggestion accepted locally. No order was opened, placed, bought, or sold.",
+        proposal,
+      });
+    } catch (err) {
+      sendJson(req, res, 400, {
+        accepted: false,
+        recordedOnly: true,
+        orderSubmitted: false,
+        error: err.message || String(err),
+      });
+    }
+    return;
+  }
+
   if (req.method === "GET" && req.url === "/api/ai/status") {
     sendJson(req, res, 200, aiEngine.state);
+    return;
+  }
+
+  if (req.method === "GET" && req.url === "/api/btc-5m/stats") {
+    try {
+      sendJson(req, res, 200, await fetchBtc5mStats());
+    } catch (err) {
+      sendJson(req, res, 502, {
+        error: err.message || String(err),
+        read_only: true,
+        trading_enabled: false,
+        venue_market_data_enabled: false,
+      });
+    }
+    return;
+  }
+
+  if (req.method === "GET" && req.url === "/api/btc-15m/stats") {
+    try {
+      sendJson(req, res, 200, await fetchBtc15mStats());
+    } catch (err) {
+      sendJson(req, res, 502, {
+        error: err.message || String(err),
+        read_only: true,
+        trading_enabled: false,
+        venue_market_data_enabled: false,
+      });
+    }
     return;
   }
 
@@ -3819,13 +4008,16 @@ async function handle(req, res) {
   }
 
   if (req.method === "GET" && req.url === "/api/kalshi/status") {
-    const configured = kalshiLiveCredentialsConfigured();
+    const credentialError = kalshiCredentialConfigError();
+    const configured = kalshiReadCredentialsConfigured();
     const accountBalance = await syncKalshiAccountBalance({ force: true });
     sendJson(req, res, 200, {
       configured,
       env: kalshiEnv(),
       baseUrl: kalshiBaseUrl(),
-      configError: configured ? null : kalshiLiveModeConfiguredError(),
+      configError: credentialError || null,
+      fundedTradingEnabled: KALSHI_FUNDED_TRADING_ENABLED,
+      fundedTradingConfigError: kalshiLiveModeConfiguredError() || null,
       accountBalance,
     });
     return;

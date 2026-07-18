@@ -13,6 +13,7 @@
       <nav class="nav" aria-label="Trading mode">
         <button class="nav-button active" type="button" data-page="paperPage">Paper</button>
         <button class="nav-button" type="button" data-page="livePage">Live</button>
+        <button class="nav-button" type="button" data-page="btcStatsPage">BTC Algorithms</button>
       </nav>
     </header>
 
@@ -70,15 +71,58 @@
               <small id="liveKalshiBalanceError">Checking connection...</small>
             </div>
 
-            <form id="liveForm" class="run-form">
+            <section id="kalshiProposalPanel" class="proposal-panel" aria-labelledby="kalshiProposalTitle" aria-busy="false">
+              <header class="proposal-header">
+                <div>
+                  <span>Published from Codex CLI</span>
+                  <h2 id="kalshiProposalTitle">CLI trade suggestion</h2>
+                </div>
+                <strong id="kalshiProposalStatus" class="proposal-status" role="status" aria-live="polite" aria-atomic="true">NO SUGGESTION</strong>
+              </header>
+
+              <aside class="proposal-cli" aria-labelledby="kalshiCliInstructionsTitle">
+                <h3 id="kalshiCliInstructionsTitle">Publish a suggestion</h3>
+                <p>Open Codex CLI in this project and ask:</p>
+                <code>Research current Kalshi markets with fresh internet sources and publish BUY or WAIT for this dashboard. Include a YES or NO side, numeric entry and exit levels, risk inputs, and direct sources. Let trusted local code size the amount and write the final instructions. Do not place or accept a trade.</code>
+                <small>This page checks automatically for a newly published suggestion.</small>
+              </aside>
+
+              <dl id="kalshiProposalDetails" class="proposal-details" hidden>
+                <div class="proposal-detail proposal-detail-wide"><dt>Market</dt><dd id="kalshiProposalMarket">--</dd></div>
+                <div><dt>Action</dt><dd id="kalshiSuggestionAction">--</dd></div>
+                <div><dt>Side</dt><dd id="kalshiProposalSide">--</dd></div>
+                <div><dt>Ticker</dt><dd id="kalshiProposalTicker">--</dd></div>
+                <div><dt>Limit price</dt><dd id="kalshiProposalLimitPrice">--</dd></div>
+                <div><dt>Count</dt><dd id="kalshiProposalContracts">--</dd></div>
+                <div><dt>Estimated fees</dt><dd id="kalshiProposalFees">--</dd></div>
+                <div><dt>Maximum loss</dt><dd id="kalshiProposalMaxLoss">--</dd></div>
+                <div><dt>Quote observed</dt><dd id="kalshiProposalQuoteTime">--</dd></div>
+                <div class="proposal-detail proposal-detail-wide"><dt>Entry timing</dt><dd id="kalshiSuggestionEntryTiming">--</dd></div>
+                <div class="proposal-detail proposal-detail-wide"><dt>Entry instruction</dt><dd id="kalshiSuggestionEntryInstruction">--</dd></div>
+                <div class="proposal-detail proposal-detail-wide"><dt>Exit timing</dt><dd id="kalshiSuggestionExitTiming">--</dd></div>
+                <div class="proposal-detail proposal-detail-wide"><dt>Exit instruction</dt><dd id="kalshiSuggestionExitInstruction">--</dd></div>
+                <div id="kalshiSuggestionTakeProfitRow" hidden><dt>Take profit</dt><dd id="kalshiSuggestionTakeProfit">--</dd></div>
+                <div id="kalshiSuggestionStopLossRow" hidden><dt>Stop loss</dt><dd id="kalshiSuggestionStopLoss">--</dd></div>
+                <div id="kalshiSuggestionExitByRow" hidden><dt>Exit by</dt><dd id="kalshiSuggestionExitBy">--</dd></div>
+                <div><dt>Suggestion valid until</dt><dd><time id="kalshiProposalExpires">--</time></dd></div>
+                <div class="proposal-detail proposal-detail-wide"><dt>Rationale</dt><dd id="kalshiProposalRationale">--</dd></div>
+                <div class="proposal-detail proposal-detail-wide"><dt>Research sources</dt><dd><ul id="kalshiProposalSources" class="proposal-sources"><li>No sources listed.</li></ul></dd></div>
+              </dl>
+
+              <p id="kalshiProposalNotice" class="proposal-notice">Accepting only records this suggestion locally. It does not place, open, close, buy, or sell anything.</p>
+              <div class="proposal-actions">
+                <button id="kalshiAcceptProposal" class="proposal-button proposal-button-primary" type="button" disabled>Accept suggestion</button>
+              </div>
+            </section>
+
+            <form id="liveForm" class="run-form legacy-live-form" hidden inert aria-hidden="true">
               <label>Model<select name="model"><option value="llama">Llama 3.3</option><option value="nemotron">Nemotron</option><option value="consensus">Both</option></select></label>
               <label>Money<div class="money-input"><span>$</span><input name="amount" type="number" min="1" step="1" value="10" inputmode="decimal" /></div></label>
               <label>Start<select name="range"><option value="now">Now</option><option value="14d">14 days ago</option><option value="custom">Choose a date</option></select></label>
               <label class="date-field" hidden>Date<input name="startDate" type="date" /></label>
-              <button id="liveRunButton" class="run-button" type="submit">Run</button>
+              <button id="liveRunButton" class="run-button" type="submit" disabled>Automatic live trading disabled</button>
             </form>
 
-            <p class="live-note">Past dates simulate. Now can place real orders.</p>
             <div class="totals">
               <div><span>Won</span><strong id="liveWon">$0.00</strong><small id="liveWonPct">0.00%</small></div>
               <div><span>Lost</span><strong id="liveLost">$0.00</strong><small id="liveLostPct">0.00%</small></div>
@@ -100,6 +144,67 @@
           <div class="trade-columns" aria-hidden="true"><span>Trade</span><span>Time</span><span>Net P/L</span></div>
           <ol id="liveTrades" class="trade-list"><li class="trade-empty">No completed trades yet.</li></ol>
         </section>
+      </section>
+
+      <section id="btcStatsPage" class="page" aria-labelledby="btcStatsTitle">
+        <header class="stats-page-header algorithms-page-header">
+          <div>
+            <p class="stats-eyebrow">V1 algorithm &middot; Live snapshots</p>
+            <h1 id="btcStatsTitle">BTC predictions</h1>
+            <p class="stats-intro">Five-minute and fifteen-minute signals shown together, calculated only from Coinbase BTC-USD candles. No Polymarket or Kalshi information is used.</p>
+          </div>
+          <p class="algorithm-source-badge">Algorithm only<br />No venue data</p>
+        </header>
+
+        <div class="algorithm-comparison-grid">
+          <article class="algorithm-card" aria-labelledby="btc5mTitle">
+            <header class="algorithm-card-head">
+              <div><span>Interval</span><h2 id="btc5mTitle">5 minutes</h2></div>
+              <div class="stats-refresh"><span id="btc5mUpdated">Waiting for data</span><button id="btc5mRefresh" class="stats-refresh-button" type="button">Refresh</button></div>
+            </header>
+            <section class="prediction-panel" aria-label="BTC five-minute prediction">
+              <div class="prediction-copy"><span>Algorithm prediction</span><strong id="btc5mPrediction">Loading</strong><p id="btc5mPredictionDetail">Comparing this interval with similar BTC setups from yesterday and today.</p></div>
+              <div class="prediction-probabilities" aria-label="Five-minute up and down probabilities">
+                <div class="probability-labels"><div><span>Up</span><strong id="btc5mUpProbability">--</strong></div><div><span>Down</span><strong id="btc5mDownProbability">--</strong></div></div>
+                <div class="probability-track" aria-hidden="true"><span id="btc5mUpBar" class="probability-up"></span><span id="btc5mDownBar" class="probability-down"></span></div>
+              </div>
+              <div class="countdown-block"><span>Window closes in</span><strong id="btc5mCountdown">--:--</strong><small id="btc5mWindow">No active interval</small></div>
+            </section>
+            <section class="stats-grid" aria-label="Five-minute algorithm statistics">
+              <article class="stat-card"><span>Signal</span><strong id="btc5mSignal">--</strong><small id="btc5mSignalStatus">Waiting for snapshot</small></article>
+              <article class="stat-card"><span>BTC now</span><strong id="btc5mBtcNow">--</strong><small>Coinbase BTC-USD</small></article>
+              <article class="stat-card"><span>Interval open</span><strong id="btc5mBtcOpen">--</strong><small>Start of current 5m window</small></article>
+              <article class="stat-card"><span>Move</span><strong id="btc5mMove">--</strong><small id="btc5mMoveThreshold">Trigger --</small></article>
+              <article class="stat-card"><span>Confidence</span><strong id="btc5mConfidence">--</strong><small>Algorithm strength multiplier</small></article>
+              <article class="stat-card"><span>Sample</span><strong id="btc5mSamples">--</strong><small>Similar completed intervals</small></article>
+            </section>
+            <footer class="stats-footer"><p id="btc5mSource">V1 algorithm using Coinbase candles only</p><p id="btc5mSafety">Read-only &middot; no venue data</p></footer>
+          </article>
+
+          <article class="algorithm-card" aria-labelledby="btc15mTitle">
+            <header class="algorithm-card-head">
+              <div><span>Interval</span><h2 id="btc15mTitle">15 minutes</h2></div>
+              <div class="stats-refresh"><span id="btc15mUpdated">Waiting for data</span><button id="btc15mRefresh" class="stats-refresh-button" type="button">Refresh</button></div>
+            </header>
+            <section class="prediction-panel" aria-label="BTC fifteen-minute prediction">
+              <div class="prediction-copy"><span>Algorithm prediction</span><strong id="btc15mPrediction">Loading</strong><p id="btc15mPredictionDetail">Comparing this interval with similar BTC setups from yesterday and today.</p></div>
+              <div class="prediction-probabilities" aria-label="Fifteen-minute up and down probabilities">
+                <div class="probability-labels"><div><span>Up</span><strong id="btc15mUpProbability">--</strong></div><div><span>Down</span><strong id="btc15mDownProbability">--</strong></div></div>
+                <div class="probability-track" aria-hidden="true"><span id="btc15mUpBar" class="probability-up"></span><span id="btc15mDownBar" class="probability-down"></span></div>
+              </div>
+              <div class="countdown-block"><span>Window closes in</span><strong id="btc15mCountdown">--:--</strong><small id="btc15mWindow">No active interval</small></div>
+            </section>
+            <section class="stats-grid" aria-label="Fifteen-minute algorithm statistics">
+              <article class="stat-card"><span>Signal</span><strong id="btc15mSignal">--</strong><small id="btc15mSignalStatus">Waiting for snapshot</small></article>
+              <article class="stat-card"><span>BTC now</span><strong id="btc15mBtcNow">--</strong><small>Coinbase BTC-USD</small></article>
+              <article class="stat-card"><span>Interval open</span><strong id="btc15mBtcOpen">--</strong><small>Start of current 15m window</small></article>
+              <article class="stat-card"><span>Move</span><strong id="btc15mMove">--</strong><small id="btc15mMoveThreshold">Trigger --</small></article>
+              <article class="stat-card"><span>Confidence</span><strong id="btc15mConfidence">--</strong><small>Algorithm strength multiplier</small></article>
+              <article class="stat-card"><span>Sample</span><strong id="btc15mSamples">--</strong><small>Similar completed intervals</small></article>
+            </section>
+            <footer class="stats-footer"><p id="btc15mSource">V1 algorithm using Coinbase candles only</p><p id="btc15mSafety">Read-only &middot; no venue data</p></footer>
+          </article>
+        </div>
       </section>
     </main>
 

@@ -16,9 +16,9 @@ through the configured OpenAI-compatible endpoint:
   response blocks the trade.
 
 The app is simulation-first. The **Paper trading** page uses fake bankrolls and
-virtual fills; the **Live trading** page can post real orders only after explicit
-activation. Live sizing can spend only available venue cash and remains bounded
-by the stake, daily-loss, total-loss, and trade-count limits.
+virtual fills. The **Live** page is now a local advisory surface: Codex CLI can
+publish a short-lived BUY, SELL, or WAIT suggestion, and the page can record the
+user's acceptance. The page cannot post, open, close, buy, or sell an order.
 
 > NVIDIA Developer Program hosted endpoints are free for prototyping. They can be
 > rate limited and are not a guaranteed free 24/7 production service. For reliable
@@ -38,6 +38,22 @@ NVIDIA_NEMOTRON_MODEL=nvidia/llama-3.3-nemotron-super-49b-v1.5
 
 Without `LLAMA_API_KEY`, the dashboard and historical replay still load, but
 paper/live workers fail closed at the AI gate and do not enter positions.
+
+## Codex CLI suggestions
+
+The Live page does not call the configured model API to create suggestions. In
+Codex CLI, opened at this repository, ask:
+
+```text
+Research and publish a current Kalshi suggestion for the Live page. Do not place any trade.
+```
+
+`AGENTS.md` routes Codex to the local publisher. The dashboard automatically
+shows whether the result is WAIT, scheduled, live, expired, or accepted. The
+publisher itself makes no network or provider-API call; research is performed
+within the existing Codex CLI session. See
+[`docs/cli-trade-suggestions.md`](docs/cli-trade-suggestions.md) for the schema
+and manual commands.
 
 ## Strategy (Momentum into Close)
 This skill is aligned with a short-horizon momentum strategy:
@@ -111,6 +127,11 @@ The dashboard separates execution environments with the same minimal controls:
   then uses configured funded accounts, displays the current Kalshi available
   cash balance, defaults to a $10 risk budget, and treats past dates as
   read-only fast replays.
+- **BTC Algorithms** shows the 5-minute and 15-minute V1 predictions together
+  on one read-only page. Both use only Coinbase BTC-USD candles and show
+  algorithm UP/DOWN probability, the current signal and BTC move, confidence,
+  sample size, and active-window countdown. These endpoints do not request
+  Polymarket or Kalshi data, start workers, save settings, or place orders.
 - Both dark-mode pages put controls and won/lost totals on the left, with a
   chart on the right showing time horizontally and money vertically. A
   newest-first trade history below the chart shows the market and side, time,
