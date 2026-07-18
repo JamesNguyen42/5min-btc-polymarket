@@ -89,6 +89,14 @@ test("suggestion UI posts only local acceptance and has no generate, provider li
   assert.doesNotMatch(ui, NETWORK_OR_PROVIDER_CALL);
 });
 
+test("the accept suggestion button is rendered under the live graph", () => {
+  const html = source("public/index.html");
+  const liveChartPanel = html.match(/<section class="chart-panel" aria-label="Live performance">[\s\S]*?<\/section>/i);
+
+  assert.ok(liveChartPanel, "Live chart panel should exist");
+  assert.match(liveChartPanel[0], /id="liveChart"[\s\S]*id="kalshiAcceptProposal"/i);
+});
+
 test("there is no provider-backed reviewer that can accept suggestions", () => {
   assert.equal(fs.existsSync(path.join(ROOT, "lib", "nemotron-proposal-reviewer.js")), false);
 });

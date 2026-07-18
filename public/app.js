@@ -807,6 +807,7 @@ function updateProposalControls() {
   const elements = proposalElements();
   const busy = ["loading", "accepting"].includes(kalshiProposalState.phase);
   elements.panel.setAttribute("aria-busy", String(busy));
+  elements.accept.setAttribute("aria-busy", String(busy));
   elements.accept.disabled = busy || !proposalCanBeAccepted(kalshiProposalState.proposal);
   elements.accept.textContent = kalshiProposalState.phase === "accepting"
     ? "Recording acceptance…"

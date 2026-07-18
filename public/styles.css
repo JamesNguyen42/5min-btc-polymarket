@@ -358,7 +358,7 @@ main {
   opacity: 0.42;
 }
 
-.proposal-panel[aria-busy="true"] .proposal-button {
+.proposal-button[aria-busy="true"] {
   cursor: wait;
 }
 

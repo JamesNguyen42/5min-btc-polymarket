@@ -110,9 +110,6 @@
               </dl>
 
               <p id="kalshiProposalNotice" class="proposal-notice">Accepting only records this suggestion locally. It does not place, open, close, buy, or sell anything.</p>
-              <div class="proposal-actions">
-                <button id="kalshiAcceptProposal" class="proposal-button proposal-button-primary" type="button" disabled>Accept suggestion</button>
-              </div>
             </section>
 
             <form id="liveForm" class="run-form legacy-live-form" hidden inert aria-hidden="true">
@@ -133,6 +130,9 @@
             <div class="chart-head"><span>Balance</span><strong id="liveBalance">$10.00</strong></div>
             <div id="liveChart" class="chart" aria-live="polite"></div>
             <p id="liveChartDetail" class="chart-detail">No activity yet.</p>
+            <div class="proposal-actions">
+              <button id="kalshiAcceptProposal" class="proposal-button proposal-button-primary" type="button" aria-describedby="kalshiProposalNotice" aria-busy="false" disabled>Accept suggestion</button>
+            </div>
           </section>
         </div>
 
